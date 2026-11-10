@@ -23,6 +23,8 @@ export const WORK_RATE = 48000;
 export const OUT_RATE = 44100;
 export const TARGET_LUFS = -16;
 export const MAX_TRUE_PEAK = -1;
+/** How far from the target the finished MP3 may be before it's reported as a miss (LU). */
+export const LOUDNESS_TOLERANCE = 0.5;
 const HOP = 240; // 5 ms at 48 kHz
 const CHUNK = 48000; // samples per read of the working file
 const CROSSOVER_HZ = 5000; // de-esser band split
@@ -66,6 +68,10 @@ export interface Result {
   inputLufs: number;
   outputLufs: number;
   outputTruePeak: number;
+  /** Whether the decoded MP3 is within LOUDNESS_TOLERANCE of the target. */
+  loudnessOk: boolean;
+  /** Whether the decoded MP3's true peak is at or below the ceiling. */
+  peakOk: boolean;
   noiseReductionDb: number | null;
   spikesTamed: number;
 }
@@ -211,42 +217,33 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
   // channels are identical, which joint stereo stores almost for free.
   const bitrate = C === 1 ? 128 : 192;
   const trim = Math.min(0, opts.outputTrimDb || 0);
-  // LAME's output is about 0.45 dB quieter than its input at these settings;
-  // the real figure is measured after each encode and fed back.
-  let encodeLoss = 0.45;
-  let gainDb = Number.isFinite(measured.lufs) ? TARGET_LUFS + encodeLoss - measured.lufs : 0;
-  let ceiling = MAX_TRUE_PEAK - 0.2 + encodeLoss;
-  let final: { lufs: number; tp: number; bytes: number } | null = null;
-  const debug = (globalThis as { DEBUG_PPA?: boolean }).DEBUG_PPA;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const enc = await render(work, gains, { gainDb, ceilingDb: ceiling, trimDb: trim, bitrate, storage }, deps, (x) => report("encode", x));
-    const v = await verify(await storage.blob("out.mp3"), checkCancel, (x) => report("verify", x));
-    final = { lufs: v.lufs, tp: v.tp, bytes: enc.bytes };
-    if (debug) console.log("attempt", attempt, { gainDb, ceiling, trim, pre: enc.lufs, post: v.lufs, tp: v.tp });
-    if (!Number.isFinite(v.lufs)) break;
-    // Judge against the targets before the trim (it's a plain gain at the end).
-    const lufs = v.lufs - trim;
-    const tp = v.tp - trim;
-    const peakOk = tp <= MAX_TRUE_PEAK - 0.02;
-    const loudOk = Math.abs(lufs - TARGET_LUFS) <= 0.2;
-    if (peakOk && loudOk) break;
-    if (Number.isFinite(enc.lufs)) encodeLoss = enc.lufs - v.lufs;
-    gainDb += TARGET_LUFS - lufs;
-    if (!peakOk) ceiling -= tp - (MAX_TRUE_PEAK - 0.15);
-  }
+  // LAME's output measures slightly quieter than its input; these were
+  // measured on speech for each bitrate (joint stereo, 44.1 kHz).
+  const encodeLoss = bitrate === 128 ? 0.42 : 0.25;
+  const gainDb = Number.isFinite(measured.lufs) ? TARGET_LUFS + encodeLoss - measured.lufs : 0;
+  // Encoding can push true peaks up a little, so limit with some margin.
+  const ceiling = MAX_TRUE_PEAK - 0.2;
+  const enc = await render(work, gains, { gainDb, ceilingDb: ceiling, trimDb: trim, bitrate, storage }, deps, (x) => report("encode", x));
+  // Decode the MP3 and measure what listeners will get. A miss is reported,
+  // not corrected: it means the processing above has a bug.
+  const v = await verify(await storage.blob("out.mp3"), checkCancel, (x) => report("verify", x));
+  if ((globalThis as { DEBUG_PPA?: boolean }).DEBUG_PPA) console.log("encode", { gainDb, ceiling, trim, pre: enc.lufs, post: v.lufs, tp: v.tp });
+  const final = { lufs: v.lufs, tp: v.tp, bytes: enc.bytes };
   report("verify", 1);
   await storage.remove("work.f32");
 
   return {
     outputName: "out.mp3",
-    bytes: final!.bytes,
+    bytes: final.bytes,
     duration: frames / WORK_RATE,
     bitrate,
     channels: C,
     targetLufs: TARGET_LUFS + trim,
     inputLufs,
-    outputLufs: final!.lufs,
-    outputTruePeak: final!.tp,
+    outputLufs: final.lufs,
+    outputTruePeak: final.tp,
+    loudnessOk: Math.abs(final.lufs - (TARGET_LUFS + trim)) <= LOUDNESS_TOLERANCE,
+    peakOk: final.tp <= MAX_TRUE_PEAK + trim,
     noiseReductionDb: denoise.noiseReductionDb(),
     spikesTamed,
   };

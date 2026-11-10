@@ -1,6 +1,6 @@
 import "./style.css";
 import type { AudioInfo } from "./io/source.ts";
-import { workingBytes, type Options, type Result, type Stage } from "./pipeline/process.ts";
+import { MAX_TRUE_PEAK, TARGET_LUFS, workingBytes, type Options, type Result, type Stage } from "./pipeline/process.ts";
 import type { Request, Response } from "./worker.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -280,6 +280,14 @@ function onDone(r: Result, blob: Blob) {
   save.href = outputUrl;
   save.download = outputName();
   $("done-name").textContent = outputName();
+  const ok = r.loudnessOk && r.peakOk;
+  $("done-pill").textContent = ok ? "Ready to publish" : "Missed target";
+  $("done-pill").classList.toggle("miss", !ok);
+  const misses: string[] = [];
+  if (!r.loudnessOk) misses.push(`its loudness is ${fmtDb(r.outputLufs)} LUFS instead of ${fmtDb(r.targetLufs, 0)}`);
+  if (!r.peakOk) misses.push(`its true peak is ${fmtDb(r.outputTruePeak)} dBTP, above the ${fmtDb(MAX_TRUE_PEAK + r.targetLufs - TARGET_LUFS, 0)} dBTP limit`);
+  $("done-miss").textContent = ok ? "" : `The finished MP3 missed the target: ${misses.join(", and ")}. This is a bug in the app; the file is still saved as processed.`;
+  $("done-miss").hidden = ok;
   $("done-meta").textContent = `${fmtDuration(r.duration)} · ${r.channels === 1 ? "mono sound" : "stereo"} · ${r.bitrate} kbps · ${fmtBytes(r.bytes)}`;
   $("mark-before").style.left = pos(r.inputLufs);
   views.done.querySelector<HTMLElement>(".scale .target")!.style.left = pos(r.targetLufs - 1);

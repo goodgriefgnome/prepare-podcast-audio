@@ -6,7 +6,7 @@ A web app (PWA) that takes a spoken-word podcast recording, cleans it up, sets i
 
 **Output:** joint-stereo MP3, constant bitrate, 44.1 kHz. With mono sound (the default), both channels carry the same signal at 128 kbps. With stereo sound the left–right mix is kept, at 192 kbps. Stereo sound can only be chosen when the input is stereo.
 
-**Loudness:** −16 LUFS integrated with true peak ≤ −1 dBTP, following Apple Podcasts' recommendation and measured per ITU-R BS.1770. The app checks these numbers by decoding the finished MP3. If the MP3 misses the target, it corrects and re-encodes.
+**Loudness:** −16 LUFS integrated with true peak ≤ −1 dBTP, following Apple Podcasts' recommendation and measured per ITU-R BS.1770. The app checks these numbers by decoding the finished MP3. If the MP3 misses (more than 0.5 LU off, or peaks above the ceiling), the app says so; that indicates a bug, so it does not quietly re-encode.
 
 **Output level:** a slider lowers the result in 3 dB steps (0 to −12 dB). It is a plain gain applied after the peak limiter, as the last step before encoding, so a −3 dB setting gives −19 LUFS with peaks ≤ −4 dBTP.
 
@@ -32,7 +32,7 @@ Audio is never held in memory as a whole. The pipeline streams in 1-second chunk
 1. **Clean** (one pass over the input file): decode → mix to output channels → resample to 48 kHz → high-pass → noise reduction → working file (32-bit float). Level features are collected every 5 ms on the way.
 2. **Balance** (no I/O): compute the gain curves from those features, then run one read pass to measure the result's loudness.
 3. **Encode:** read the working file → apply gains → resample to 44.1 kHz → loudness gain → limiter → MP3, written to OPFS.
-4. **Verify:** decode the MP3 and measure loudness and true peak. If needed, adjust and re-encode.
+4. **Verify:** decode the MP3 and measure loudness and true peak, and report a miss.
 
 Temporary disk use is about 690 MB per hour (mono) or 1.4 GB per hour (stereo), plus the MP3. The app checks the available storage quota before starting.
 
