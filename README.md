@@ -4,9 +4,11 @@ A web app (PWA) that takes a spoken-word podcast recording, cleans it up, sets i
 
 **Input:** WAV (8/16/24/32-bit PCM, 32/64-bit float, WAVE_FORMAT_EXTENSIBLE, RF64/BW64) or MP3 (CBR/VBR, any MPEG version).
 
-**Output:** MP3, constant bitrate, 44.1 kHz. Mono at 128 kbps (the default), or stereo at 192 kbps. Stereo can only be chosen when the input is stereo.
+**Output:** joint-stereo MP3, constant bitrate, 44.1 kHz. With mono sound (the default), both channels carry the same signal at 128 kbps. With stereo sound the left–right mix is kept, at 192 kbps. Stereo sound can only be chosen when the input is stereo.
 
-**Loudness:** −16 LUFS integrated with true peak ≤ −1 dBTP, following Apple Podcasts' recommendation and measured per ITU-R BS.1770. Mono output is measured as dual-mono, the way players reproduce it. The app checks these numbers by decoding the finished MP3. If the MP3 misses the target, it corrects and re-encodes.
+**Loudness:** −16 LUFS integrated with true peak ≤ −1 dBTP, following Apple Podcasts' recommendation and measured per ITU-R BS.1770. The app checks these numbers by decoding the finished MP3. If the MP3 misses the target, it corrects and re-encodes.
+
+**Output level:** a slider lowers the result in 3 dB steps (0 to −12 dB). It is a plain gain applied after the peak limiter, as the last step before encoding, so a −3 dB setting gives −19 LUFS with peaks ≤ −4 dBTP.
 
 ## What it does
 
@@ -19,7 +21,7 @@ Each step can be turned off in the UI except the loudness and peak stages.
 | Tame sudden loud noises | Finds bursts shorter than 1 s that are more than 6 dB above the loud end of the surrounding speech (95th percentile, ±3 s), then pulls them to 3 dB above it. Uses 30 ms look-ahead. |
 | Even out speakers | Leveler that measures speech level over ±1.5 s windows and moves each stretch toward the recording's median speech level (±12 dB max, boost capped in pauses, smoothed in both directions). This is followed by gentle 2.5:1 compression just above speech level. |
 | Soften harsh "s" sounds | Split-band de-esser with a Linkwitz–Riley crossover at 5 kHz. It reduces the upper band only when that band dominates and is loud relative to speech: 3:1 ratio, at most 8 dB. |
-| Loudness and peaks | Gain to −16 LUFS, then a true-peak limiter (4× oversampled detection, 3 ms look-ahead), then LAME. |
+| Loudness and peaks | Gain to −16 LUFS, then a true-peak limiter (4× oversampled detection, 3 ms look-ahead), then the output level setting, then LAME. |
 
 Because the whole recording is analysed before any gain is applied, the level stages can look ahead and behind instead of reacting the way a real-time plugin does.
 
@@ -50,7 +52,7 @@ npm run build      # production build in dist/
 Run the full pipeline from the command line (Node), which is useful for listening tests:
 
 ```bash
-node --experimental-transform-types test/run.ts input.wav output.mp3 [mono|stereo] [--off=noise,level,spikes,sibilance,rumble]
+node --experimental-transform-types test/run.ts input.wav output.mp3 [mono|stereo] [--off=noise,level,spikes,sibilance,rumble] [--trim=-3]
 ```
 
 Drive the built app end to end in Chromium (after `npx vite preview --port 4173`):

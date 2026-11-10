@@ -34,6 +34,11 @@ export interface Options {
   spikes: boolean;
   sibilance: boolean;
   level: boolean;
+  /**
+   * Output level change in dB (≤ 0), applied after the peak limiter as the
+   * very last step, so it lowers loudness and peaks together.
+   */
+  outputTrimDb: number;
 }
 
 /**
@@ -55,7 +60,9 @@ export interface Result {
   bytes: number;
   duration: number;
   bitrate: number;
+  /** 1 = mono sound (written as joint stereo with identical channels). */
   channels: 1 | 2;
+  targetLufs: number;
   inputLufs: number;
   outputLufs: number;
   outputTruePeak: number;
@@ -200,7 +207,10 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
   report("balance", 1);
 
   // ---- Encode and verify, correcting until the MP3 itself is on target.
+  // Both choices are written as joint-stereo MP3s; for mono sound the two
+  // channels are identical, which joint stereo stores almost for free.
   const bitrate = C === 1 ? 128 : 192;
+  const trim = Math.min(0, opts.outputTrimDb || 0);
   // LAME's output is about 0.45 dB quieter than its input at these settings;
   // the real figure is measured after each encode and fed back.
   let encodeLoss = 0.45;
@@ -209,17 +219,20 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
   let final: { lufs: number; tp: number; bytes: number } | null = null;
   const debug = (globalThis as { DEBUG_PPA?: boolean }).DEBUG_PPA;
   for (let attempt = 0; attempt < 4; attempt++) {
-    const enc = await render(work, gains, { gainDb, ceilingDb: ceiling, bitrate, storage }, deps, (x) => report("encode", x));
-    const v = await verify(await storage.blob("out.mp3"), C, checkCancel, (x) => report("verify", x));
+    const enc = await render(work, gains, { gainDb, ceilingDb: ceiling, trimDb: trim, bitrate, storage }, deps, (x) => report("encode", x));
+    const v = await verify(await storage.blob("out.mp3"), checkCancel, (x) => report("verify", x));
     final = { lufs: v.lufs, tp: v.tp, bytes: enc.bytes };
-    if (debug) console.log("attempt", attempt, { gainDb, ceiling, pre: enc.lufs, post: v.lufs, tp: v.tp });
+    if (debug) console.log("attempt", attempt, { gainDb, ceiling, trim, pre: enc.lufs, post: v.lufs, tp: v.tp });
     if (!Number.isFinite(v.lufs)) break;
-    const peakOk = v.tp <= MAX_TRUE_PEAK - 0.02;
-    const loudOk = Math.abs(v.lufs - TARGET_LUFS) <= 0.2;
+    // Judge against the targets before the trim (it's a plain gain at the end).
+    const lufs = v.lufs - trim;
+    const tp = v.tp - trim;
+    const peakOk = tp <= MAX_TRUE_PEAK - 0.02;
+    const loudOk = Math.abs(lufs - TARGET_LUFS) <= 0.2;
     if (peakOk && loudOk) break;
     if (Number.isFinite(enc.lufs)) encodeLoss = enc.lufs - v.lufs;
-    gainDb += TARGET_LUFS - v.lufs;
-    if (!peakOk) ceiling -= v.tp - (MAX_TRUE_PEAK - 0.15);
+    gainDb += TARGET_LUFS - lufs;
+    if (!peakOk) ceiling -= tp - (MAX_TRUE_PEAK - 0.15);
   }
   report("verify", 1);
   await storage.remove("work.f32");
@@ -230,6 +243,7 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
     duration: frames / WORK_RATE,
     bitrate,
     channels: C,
+    targetLufs: TARGET_LUFS + trim,
     inputLufs,
     outputLufs: final!.lufs,
     outputTruePeak: final!.tp,
@@ -261,6 +275,8 @@ interface Gains {
 interface EncodeSettings {
   gainDb: number;
   ceilingDb: number;
+  /** Final level change after the limiter, in dB. */
+  trimDb: number;
   bitrate: number;
   storage: Storage;
 }
@@ -284,11 +300,12 @@ async function render(
   const meter = new LoudnessMeter(OUT_RATE, C);
   const lim = enc ? new TruePeakLimiter(OUT_RATE, C, enc.ceilingDb) : null;
   const g = enc ? Math.pow(10, enc.gainDb / 20) : 1;
+  const trim = enc ? Math.pow(10, enc.trimDb / 20) : 1;
   let encoder: Awaited<ReturnType<typeof createMp3Encoder>> | null = null;
   let out: Awaited<ReturnType<Storage["bytes"]>> | null = null;
   if (enc) {
     encoder = await createMp3Encoder();
-    encoder.configure({ channels: C as 1 | 2, sampleRate: OUT_RATE, bitrate: enc.bitrate as 128 | 192 });
+    encoder.configure({ channels: 2, sampleRate: OUT_RATE, bitrate: enc.bitrate as 128 | 192 });
     out = await enc.storage.bytes("out.mp3");
   }
   const lo = new Float32Array(CHUNK);
@@ -299,8 +316,9 @@ async function render(
 
   const emit = (p: Planar) => {
     if (!p[0].length) return;
+    if (trim !== 1) for (const ch of p) for (let i = 0; i < ch.length; i++) ch[i] *= trim;
     meter.push(p);
-    if (encoder && out) out.append(encoder.encode(p).slice());
+    if (encoder && out) out.append(encoder.encode(C === 1 ? [p[0], p[0]] : p).slice());
   };
   const finalStage = (p: Planar) => {
     if (!p[0].length) return;
@@ -346,14 +364,15 @@ async function render(
   return { lufs: meter.integrated(), bytes };
 }
 
+/** Decodes the (always two-channel) MP3 and measures it as a listener's player would. */
 async function verify(
   mp3: Blob,
-  C: number,
   checkCancel: () => void,
   progress: (f: number) => void,
 ): Promise<{ lufs: number; tp: number }> {
   const dec = new MPEGDecoder();
   await dec.ready;
+  const C = 2;
   const meter = new LoudnessMeter(OUT_RATE, C);
   const tp = new TruePeakMeter(C);
   try {

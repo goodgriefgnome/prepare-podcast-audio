@@ -112,14 +112,45 @@ function setChannels(c: 1 | 2) {
   $("ch-stereo").setAttribute("aria-pressed", String(c === 2));
   const monoIn = info?.channels === 1;
   $("ch-hint").textContent = monoIn
-    ? "Your recording is mono, so the output is mono too."
+    ? "Your recording is mono, so both speakers get the same sound."
     : c === 1
-      ? "Best for voice. Half the file size, and sounds identical on earbuds and phone speakers."
-      : "Use if you have music or a deliberate stereo mix. Doubles the file size.";
+      ? "Best for voice: both speakers get the same sound, so nobody is stuck in one ear."
+      : "Keeps the left–right mix. Use if you have music or a deliberate stereo mix. The file is 50% larger.";
   const kbps = c === 1 ? 128 : 192;
-  $("spec-line").textContent = `MP3 · ${c === 1 ? "mono" : "stereo"} · ${kbps} kbps CBR · 44.1 kHz`;
+  $("spec-line").textContent = `MP3 · joint stereo${c === 1 ? " (mono sound)" : ""} · ${kbps}\u00a0kbps CBR · 44.1\u00a0kHz`;
   $("spec-size").textContent = info ? fmtBytes((info.duration * kbps * 1000) / 8).replace(" ", "\u00a0") : "";
 }
+
+// Output level: a plain gain after the limiter, in 3 dB steps.
+const trimInput = $<HTMLInputElement>("trim");
+const TRIM_KEY = "ppa.outputTrimDb";
+try {
+  const saved = localStorage.getItem(TRIM_KEY);
+  if (saved !== null && Number.isFinite(Number(saved))) trimInput.value = saved;
+} catch {
+  /* storage unavailable */
+}
+function trimDb(): number {
+  return Math.min(0, Math.round(Number(trimInput.value) / 3) * 3);
+}
+function updateTrim() {
+  const t = trimDb();
+  const nb = (s: string) => s.replace(/ /g, "\u00a0");
+  $("trim-value").textContent = t === 0 ? "0 dB" : `${minus(String(t))} dB`;
+  $("trim-hint").textContent =
+    t === 0
+      ? "Apple’s recommended loudness. Turn it down if your episodes sound louder than other shows."
+      : `${minus(String(-t))} dB quieter than Apple’s recommendation, applied after everything else.`;
+  $("spec-loud").textContent = `${nb(`${minus(String(-16 + t))} LUFS`)} integrated · peaks ≤ ${nb(`${minus(String(-1 + t))} dBTP`)}`;
+  $("spec-note").textContent = t === 0 ? "Meets Apple Podcasts guidelines." : "Quieter than Apple’s −16 LUFS recommendation.";
+  try {
+    localStorage.setItem(TRIM_KEY, String(t));
+  } catch {
+    /* storage unavailable */
+  }
+}
+trimInput.addEventListener("input", updateTrim);
+updateTrim();
 $("ch-mono").addEventListener("click", () => setChannels(1));
 $("ch-stereo").addEventListener("click", () => {
   if (info?.channels !== 1) setChannels(2);
@@ -138,6 +169,7 @@ function options(): Options {
     spikes: on("c-spikes"),
     sibilance: on("c-sibilance"),
     level: on("c-level"),
+    outputTrimDb: trimDb(),
   };
 }
 
@@ -248,8 +280,9 @@ function onDone(r: Result, blob: Blob) {
   save.href = outputUrl;
   save.download = outputName();
   $("done-name").textContent = outputName();
-  $("done-meta").textContent = `${fmtDuration(r.duration)} · ${r.channels === 1 ? "mono" : "stereo"} · ${r.bitrate} kbps · ${fmtBytes(r.bytes)}`;
+  $("done-meta").textContent = `${fmtDuration(r.duration)} · ${r.channels === 1 ? "mono sound" : "stereo"} · ${r.bitrate} kbps · ${fmtBytes(r.bytes)}`;
   $("mark-before").style.left = pos(r.inputLufs);
+  views.done.querySelector<HTMLElement>(".scale .target")!.style.left = pos(r.targetLufs - 1);
   $("mark-after").style.left = pos(r.outputLufs);
   $("lufs-before").textContent = `${fmtDb(r.inputLufs)} LUFS`;
   $("lufs-after").textContent = `${fmtDb(r.outputLufs)} LUFS`;

@@ -87,6 +87,8 @@ header p { margin: 4px 0 0; color: var(--muted) }
 .check span { grid-column: 2; font-size: 13px; color: var(--muted) }
 .check b { font-weight: 600 }
 
+input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent) }
+
 .spec { background: var(--accent-soft); border-radius: 10px; padding: 12px 14px; font-size: 13px; display: grid; gap: 2px }
 
 .primary, .secondary { font: inherit; border-radius: 10px; cursor: pointer; text-align: center; text-decoration: none; display: inline-block }

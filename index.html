@@ -50,6 +50,16 @@
         </div>
 
         <div class="group">
+          <div class="row">
+            <label class="label" for="trim">Output level</label>
+            <span class="num hint" id="trim-value"></span>
+          </div>
+          <input type="range" id="trim" min="-12" max="0" step="3" value="0" list="trim-steps" />
+          <datalist id="trim-steps"><option value="-12"></option><option value="-9"></option><option value="-6"></option><option value="-3"></option><option value="0"></option></datalist>
+          <div class="hint" id="trim-hint"></div>
+        </div>
+
+        <div class="group">
           <span class="label">Clean up</span>
           <div class="checks">
             <label class="check"><input type="checkbox" id="c-rumble" checked /><b>Remove rumble</b><span>Cuts low-frequency hum, traffic and desk bumps below the voice.</span></label>
@@ -63,8 +73,8 @@
         <div class="spec">
           <span class="label">Output</span>
           <span class="num" id="spec-line"></span>
-          <span class="num">−16&nbsp;LUFS integrated · peaks ≤&nbsp;−1&nbsp;dBTP</span>
-          <span>Meets Apple Podcasts guidelines. About <span class="num" id="spec-size"></span>.</span>
+          <span class="num" id="spec-loud"></span>
+          <span><span id="spec-note"></span> About <span class="num" id="spec-size"></span>.</span>
         </div>
 
         <p class="error" id="ready-error" role="alert" hidden></p>

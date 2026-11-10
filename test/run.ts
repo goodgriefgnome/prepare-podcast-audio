@@ -1,7 +1,7 @@
 /**
  * Runs the full pipeline in Node on a file and copies the result next to it.
  *
- *   node --experimental-transform-types test/run.ts input.wav output.mp3 [mono|stereo] [--off=noise,level,...]
+ *   node --experimental-transform-types test/run.ts input.wav output.mp3 [mono|stereo] [--off=noise,level,...] [--trim=-3]
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -33,6 +33,7 @@ const result = await processAudio(
     spikes: !off.has("spikes"),
     sibilance: !off.has("sibilance"),
     level: !off.has("level"),
+    outputTrimDb: Number(rest.find((r) => r.startsWith("--trim="))?.slice(7) ?? 0),
   },
   {
     storage,
