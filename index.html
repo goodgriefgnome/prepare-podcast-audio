@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Prepare Podcast Audio</title>
+    <meta name="description" content="Clean up a podcast recording and set it to the right loudness for podcast apps. Runs entirely on your device." />
+    <meta name="theme-color" content="#f3f5f4" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1513" media="(prefers-color-scheme: dark)" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <h1>Prepare Podcast Audio</h1>
+        <p>Clean up a recording and make it the right loudness for podcast apps. Everything happens on your device; nothing is uploaded.</p>
+      </header>
+
+      <!-- Choose a file -->
+      <section class="card" id="view-empty">
+        <label class="drop" id="drop" for="file">
+          <span class="big">Drop a WAV or MP3 here</span>
+          <span class="small">or</span>
+          <span class="secondary as-button">Choose file…</span>
+          <input type="file" id="file" accept=".wav,.mp3,audio/wav,audio/x-wav,audio/wave,audio/mpeg" />
+        </label>
+        <p class="error" id="empty-error" role="alert" hidden></p>
+      </section>
+
+      <!-- Settings -->
+      <section class="card" id="view-ready" hidden>
+        <div class="file">
+          <div class="name" id="ready-name"></div>
+          <button class="link" id="change" type="button">Change file</button>
+          <div class="meta num" id="ready-meta"></div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <span class="label" id="ch-label">Output channels</span>
+            <div class="seg" role="group" aria-labelledby="ch-label">
+              <button id="ch-mono" type="button" aria-pressed="true">Mono</button>
+              <button id="ch-stereo" type="button" aria-pressed="false">Stereo</button>
+            </div>
+          </div>
+          <div class="hint" id="ch-hint"></div>
+        </div>
+
+        <div class="group">
+          <span class="label">Clean up</span>
+          <div class="checks">
+            <label class="check"><input type="checkbox" id="c-rumble" checked /><b>Remove rumble</b><span>Cuts low-frequency hum, traffic and desk bumps below the voice.</span></label>
+            <label class="check"><input type="checkbox" id="c-noise" checked /><b>Reduce background noise</b><span>Lowers steady hiss, fans and room tone between words.</span></label>
+            <label class="check"><input type="checkbox" id="c-spikes" checked /><b>Tame sudden loud noises</b><span>Pulls coughs, bumps, door slams and mic pops down to the level of the voice.</span></label>
+            <label class="check"><input type="checkbox" id="c-sibilance" checked /><b>Soften harsh “s” sounds</b><span>Tames sibilance that gets sharp after loudness is raised.</span></label>
+            <label class="check"><input type="checkbox" id="c-level" checked /><b>Even out speakers</b><span>Brings quiet and loud voices closer together so listeners don’t reach for the volume.</span></label>
+          </div>
+        </div>
+
+        <div class="spec">
+          <span class="label">Output</span>
+          <span class="num" id="spec-line"></span>
+          <span class="num">−16&nbsp;LUFS integrated · peaks ≤&nbsp;−1&nbsp;dBTP</span>
+          <span>Meets Apple Podcasts guidelines. About <span class="num" id="spec-size"></span>.</span>
+        </div>
+
+        <p class="error" id="ready-error" role="alert" hidden></p>
+        <button class="primary" id="go" type="button">Prepare audio</button>
+      </section>
+
+      <!-- Processing -->
+      <section class="card" id="view-proc" hidden>
+        <div class="file">
+          <div class="name" id="proc-name"></div>
+          <span class="num hint" id="proc-duration"></span>
+        </div>
+        <ol class="steps" id="steps">
+          <li data-step="0"><span class="dot"></span><span>Read and clean up</span><span class="num hint"></span></li>
+          <li data-step="1"><span class="dot"></span><span>Balance levels</span><span class="num hint"></span></li>
+          <li data-step="2"><span class="dot"></span><span>Set loudness and encode MP3</span><span class="num hint"></span></li>
+        </ol>
+        <div class="bar" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" id="bar"><i></i></div>
+        <div class="row hint"><span id="eta">Starting…</span><span class="num" id="pct">0%</span></div>
+        <button class="secondary" id="cancel" type="button">Cancel</button>
+        <p class="note">Keep this tab open until it finishes.</p>
+      </section>
+
+      <!-- Done -->
+      <section class="card" id="view-done" hidden>
+        <div class="row">
+          <div class="file grow">
+            <div class="name" id="done-name"></div>
+            <div class="meta num" id="done-meta"></div>
+          </div>
+          <span class="pill">Ready to publish</span>
+        </div>
+
+        <div class="meter">
+          <span class="label">Loudness</span>
+          <div class="scale" aria-hidden="true">
+            <div class="target"></div>
+            <div class="mark before" id="mark-before"></div>
+            <div class="mark after" id="mark-after"></div>
+          </div>
+          <div class="ticks num" aria-hidden="true" id="ticks"></div>
+          <div class="legend">
+            <span><i class="swatch before"></i>Original <span class="num" id="lufs-before"></span></span>
+            <span><i class="swatch after"></i>Prepared <span class="num" id="lufs-after"></span></span>
+            <span><i class="swatch target"></i>Target range</span>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><span class="v num" id="stat-lufs"></span><span class="k">LUFS integrated</span></div>
+          <div class="stat"><span class="v num" id="stat-tp"></span><span class="k">dBTP true peak</span></div>
+          <div class="stat"><span class="v num" id="stat-3"></span><span class="k" id="stat-3-label"></span></div>
+        </div>
+
+        <div class="actions">
+          <a class="primary as-button" id="save" download>Save MP3</a>
+          <button class="secondary" id="again" type="button">Prepare another</button>
+        </div>
+      </section>
+
+      <p class="foot">Made for spoken-word podcasts. Output is MP3 at 44.1 kHz.</p>
+    </main>
+  </body>
+</html>
