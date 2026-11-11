@@ -7,13 +7,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// The RNNoise build only runs in browser-like environments.
-(globalThis as Record<string, unknown>).WorkerGlobalScope ??= class {};
 (globalThis as Record<string, unknown>).DEBUG_PPA = true;
 
 const { openAudio } = await import("../src/io/mp3.ts");
 const { processAudio } = await import("../src/pipeline/process.ts");
 const { rnnoiseFactory } = await import("../src/pipeline/denoise.ts");
+const { localFrontEnd } = await import("../src/pipeline/frontend.ts");
 const { NodeStorage } = await import("./node-storage.ts");
 
 const [input, output, ch = "mono", ...rest] = process.argv.slice(2);
@@ -37,7 +36,7 @@ const result = await processAudio(
   },
   {
     storage,
-    denoiser: rnnoiseFactory,
+    frontEnd: localFrontEnd(rnnoiseFactory),
     onProgress(p) {
       if (p.stage !== lastStage) {
         console.log(`${((Date.now() - t0) / 1000).toFixed(1)}s ${p.stage} (${(p.fraction * 100).toFixed(0)}%)`);

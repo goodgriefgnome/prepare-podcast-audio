@@ -17,7 +17,7 @@ Each step can be turned off in the UI except the loudness and peak stages.
 | Step | How |
 |---|---|
 | Remove rumble | 4th-order Butterworth high-pass at 80 Hz. With this off, a 20 Hz subsonic/DC filter is still applied. |
-| Reduce background noise | RNNoise, one instance per channel. Reduction is limited to about 18 dB by mixing a little of the original back in, which keeps voices natural. Its voice-activity output also drives the later stages. |
+| Reduce background noise | RNNoise (built from source with SIMD, see below), one instance per channel. Reduction is limited to about 18 dB by mixing a little of the original back in, which keeps voices natural. Its voice-activity output also drives the later stages. |
 | Tame sudden loud noises | Finds bursts shorter than 1 s that are more than 6 dB above the loud end of the surrounding speech (95th percentile, ±3 s), then pulls them to 3 dB above it. Uses 30 ms look-ahead. |
 | Even out speakers | Leveler that measures speech level over ±1.5 s windows and moves each stretch toward the average speech level of the surrounding minute (±12 dB max, boost capped in pauses, smoothed in both directions). This is followed by gentle 2.5:1 compression just above speech level. |
 | Soften harsh "s" sounds | Split-band de-esser with a Linkwitz–Riley crossover at 5 kHz. It reduces the upper band only when that band dominates and is loud relative to speech: 3:1 ratio, at most 8 dB. |
@@ -38,7 +38,7 @@ Everything is on one page. Settings are on the left (at the top on phones), and 
 
 The whole job is a single streaming pass over the input, plus a check of the finished MP3. Audio is never held in memory as a whole, and the only file written is the MP3 (in the browser's Origin Private File System).
 
-1. **Process:** decode → mix to output channels → resample to 48 kHz → high-pass → noise reduction. The cleaned audio then waits in a delay line of about 85 s while level features are collected every 5 ms. Gains for each 20 s stretch are worked out from the features of the ±65 s around it. The audio then has the gains applied and is resampled to 44.1 kHz, limited, set to the output level and encoded.
+1. **Process:** decode → mix to output channels → resample to 48 kHz → high-pass → noise reduction → level features every 5 ms. This front end runs on 30 s blocks spread over several threads (see below). The cleaned audio then waits in a delay line of about 85 s. Gains for each 20 s stretch are worked out from the features of the ±65 s around it. The audio then has the gains applied and is resampled to 44.1 kHz, limited, set to the output level and encoded.
 2. **Verify:** decode the MP3, measure loudness and true peak, and report a miss.
 
 Because the MP3 is written as processing goes, it can be played before the file is finished. The worker hands the page a copy of the bytes written so far, and an ordinary `<audio>` element plays it.
@@ -48,7 +48,15 @@ Instead of whole-recording statistics, the level stages use a sliding window of 
 - **Leveler:** aims each stretch of speech at the average speech level of the surrounding minute.
 - **Loudness normalizer:** sets the gain so that the BS.1770 gated loudness of the surrounding minute is −16 LUFS. It allows for the de-esser's cut and the limiter. Evaluated once a second and interpolated.
 
-Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo) plus about 30 MB per hour of per-5 ms arrays. Processing runs about 4–5× faster than real time on a desktop; noise reduction is most of that.
+### Threads
+
+The front end runs on up to 4 extra threads (one fewer than the device's cores). The recording is split into 30 s blocks on whole-second boundaries. Each block starts 3 s early so the filters and the noise model have settled, and its first 3 s are thrown away. The processing worker takes the results back in order.
+
+The noise model has a long memory, so a block never exactly matches one continuous run. At the joins the two differ by about −50 dB (relative to the average level), and now and then by more inside a block. Both are valid results. To keep joins seamless, each block also returns 1 s past its end, which is crossfaded into the start of the next one.
+
+Everything after the front end stays on one thread: gains, the 44.1 kHz resampler, limiter and LAME all keep state from one sample to the next. On a 4-core desktop this sequential part sets the speed: about 11× real time for 48 kHz input.
+
+Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo), up to one 34 s block per thread in flight, plus about 30 MB per hour of per-5 ms arrays.
 
 ## Development
 
@@ -71,14 +79,25 @@ Drive the built app end to end in Chromium (after `npx vite preview --port 4173`
 node test/e2e.cjs input.wav[,more.mp3,...] outputDir [stereo] [screenshotDir]
 ```
 
+### RNNoise
+
+The app ships a WebAssembly build of [RNNoise](https://github.com/xiph/rnnoise) in `src/vendor/rnnoise.wasm` (BSD licence, `src/vendor/RNNOISE-COPYING`). `rnnoise/build.sh` builds it with Emscripten from a pinned RNNoise commit, using RNNoise's hand-written x86 vector code, which Emscripten translates to WebAssembly SIMD. That runs about 3× faster than a plain build, and its output differs from the plain build by about −64 dB.
+
+- The **Build RNNoise** workflow builds it (plus slower variants for comparison) and publishes the files on the `rnnoise-build` branch. To update, change `rnnoise/build.sh`, let the workflow run, and copy `rnnoise-release.wasm` from that branch to `src/vendor/rnnoise.wasm`.
+- The deploy workflow rebuilds it and refuses to deploy unless the committed file is identical.
+
 `dist/` is a static site and can be served from any HTTPS host. OPFS and service workers need a secure context.
 
 ## Code map
 
 - `src/main.ts`, `index.html`, `src/style.css` — the page: file list, queue, settings and player
 - `src/worker.ts` — runs the pipeline in a dedicated worker
+- `src/frontend-worker.ts`, `src/pipeline/pool.ts` — threads for the front end
 - `src/pipeline/process.ts` — the passes described above
 - `src/pipeline/dynamics.ts` — gain-curve computation (spikes, leveler, compressor, de-esser)
+- `src/pipeline/frontend.ts` — the front end, run on blocks
 - `src/pipeline/stream.ts` — streaming noise reduction and level features
+- `src/pipeline/denoise.ts` — loads RNNoise
+- `rnnoise/build.sh` — builds RNNoise
 - `src/dsp/` — filters, BS.1770 loudness, resampler, true-peak meter and limiter
 - `src/io/` — WAV and MP3 readers, OPFS storage

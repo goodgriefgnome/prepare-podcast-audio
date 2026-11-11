@@ -2,7 +2,8 @@
 import { openAudio } from "./io/mp3.ts";
 import { UnsupportedFileError, type AudioInfo } from "./io/source.ts";
 import { OpfsStorage, type ByteStore, type Storage } from "./io/store.ts";
-import { rnnoiseFactory } from "./pipeline/denoise.ts";
+import type { FrontEnd } from "./pipeline/frontend.ts";
+import { frontEndThreads, workerFrontEnd } from "./pipeline/pool.ts";
 import { processAudio, type Options, type Progress, type Result } from "./pipeline/process.ts";
 
 export type Request =
@@ -28,6 +29,9 @@ export type Response =
 
 declare const self: DedicatedWorkerGlobalScope;
 const post = (r: Response) => self.postMessage(r);
+
+/** Front-end threads, started on first use and kept for later files. */
+let frontEnd: FrontEnd | null = null;
 
 let current: { id: number; out: ByteStore | null } | null = null;
 let paused: { promise: Promise<void>; resume: () => void } | null = null;
@@ -94,7 +98,7 @@ async function processOne(msg: Extract<Request, { type: "process" }>) {
     const result = await processAudio(src, msg.options, {
       storage,
       outputName: msg.outputName,
-      denoiser: rnnoiseFactory,
+      frontEnd: (frontEnd ??= workerFrontEnd(frontEndThreads())),
       onProgress: (progress) => post({ type: "progress", id: msg.id, progress }),
       checkCancel: () => {},
       gate: () => paused?.promise ?? Promise.resolve(),

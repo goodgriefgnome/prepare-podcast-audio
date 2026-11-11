@@ -25,6 +25,11 @@ export class Fifo {
     this.buf.set(x, this.end);
     this.end += x.length;
   }
+  /** Copies n samples starting `offset` samples in, without removing them. */
+  peek(offset: number, n: number): Float32Array {
+    if (offset < 0 || offset + n > this.length) throw new RangeError("Fifo.peek out of range");
+    return this.buf.slice(this.start + offset, this.start + offset + n);
+  }
   shift(n: number): Float32Array {
     const out = this.buf.slice(this.start, this.start + n);
     this.start += n;
@@ -66,8 +71,10 @@ export class DenoiseStream {
   private outCount = 0;
   private frame: Float32Array;
   private mixFrame: Float32Array;
-  private before: number[] = [];
-  private after: number[] = [];
+  private frames = 0;
+  /** Background level between words (dB) before and after, per frame, for the frames recorded. */
+  readonly before = new F32List();
+  readonly after = new F32List();
   /** Linear mix of the original kept under the model output. */
   private dryMix: number;
 
@@ -76,6 +83,9 @@ export class DenoiseStream {
     private channels: number,
     private enabled: boolean,
     maxReductionDb = 18,
+    /** Only frames in [recordFrom, recordTo) count towards the noise-reduction figures. */
+    private recordFrom = 0,
+    private recordTo = Infinity,
   ) {
     this.frameSize = insts[0].frameSize;
     this.skip = enabled ? insts[0].delay : 0;
@@ -96,6 +106,7 @@ export class DenoiseStream {
     let eIn = 0;
     for (let i = 0; i < F; i++) eIn += mix[i] * mix[i];
     if (!this.enabled) {
+      this.frames++;
       this.vad.push(this.insts[0].process(mix));
       for (let c = 0; c < C; c++) this.wet[c].push(frames[c]);
       return;
@@ -112,7 +123,8 @@ export class DenoiseStream {
     }
     this.skip = Math.max(0, this.skip - F);
     this.vad.push(v);
-    if (v < 0.1 && eIn > 1e-10) {
+    const f = this.frames++;
+    if (f >= this.recordFrom && f < this.recordTo && v < 0.1 && eIn > 1e-10) {
       const m = this.dryMix;
       this.before.push(10 * Math.log10(eIn / F));
       this.after.push(10 * Math.log10(Math.max(1e-12, (eOut / F) * (1 - m) ** 2 + (eIn / F) * m * m)));
@@ -160,12 +172,13 @@ export class DenoiseStream {
     return this.drain(this.inCount);
   }
 
-  /** Median change in background level between words, in dB (negative = quieter). */
-  noiseReductionDb(): number | null {
-    if (!this.enabled || this.before.length < 20) return null;
-    const med = (x: number[]) => x.slice().sort((p, q) => p - q)[Math.floor(x.length / 2)];
-    return med(this.after) - med(this.before);
-  }
+}
+
+/** Median change in background level between words, in dB (negative = quieter). */
+export function noiseReductionDb(before: Float32Array, after: Float32Array): number | null {
+  if (before.length < 20) return null;
+  const med = (x: Float32Array) => x.slice().sort()[Math.floor(x.length / 2)];
+  return med(after) - med(before);
 }
 
 /** Per-hop level features used to compute the dynamics gain curves. */

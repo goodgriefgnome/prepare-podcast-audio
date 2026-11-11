@@ -1,25 +1,34 @@
 import { createMp3Encoder } from "wasm-media-encoders";
 import { MPEGDecoder } from "mpg123-decoder";
-import { butterworthHighPass, LR4Crossover } from "../dsp/biquad.ts";
-import { LoudnessMeter } from "../dsp/loudness.ts";
+import { LR4Crossover } from "../dsp/biquad.ts";
+import { gatedLoudness, LoudnessMeter } from "../dsp/loudness.ts";
 import { Resampler } from "../dsp/resampler.ts";
 import { TruePeakLimiter, TruePeakMeter } from "../dsp/truepeak.ts";
 import type { AudioSource, Planar } from "../io/source.ts";
 import { readBytes } from "../io/source.ts";
 import type { Storage } from "../io/store.ts";
-import type { DenoiserFactory } from "./denoise.ts";
+import {
+  BLOCK_SECONDS,
+  type BlockResult,
+  CROSSOVER_HZ,
+  type FrontEnd,
+  type FrontEndOptions,
+  HOP,
+  LEAD_SECONDS,
+  TAIL_SECONDS,
+  WORK_RATE,
+} from "./frontend.ts";
 import { PLAN_CONTEXT_HOPS, planGains } from "./plan.ts";
-import { DenoiseStream, F32List, Fifo, HopFeatures } from "./stream.ts";
+import { F32List, Fifo, noiseReductionDb } from "./stream.ts";
 
-export const WORK_RATE = 48000;
+export { WORK_RATE };
 export const OUT_RATE = 44100;
 export const TARGET_LUFS = -16;
 export const MAX_TRUE_PEAK = -1;
 /** How far from the target the finished MP3 may be before it's reported as a miss (LU). */
 export const LOUDNESS_TOLERANCE = 0.5;
-const HOP = 240; // 5 ms at 48 kHz
 const SEGMENT_HOPS = 4000; // gains are planned 20 s at a time
-const CROSSOVER_HZ = 5000; // de-esser band split
+const VAD_FRAME = 480; // noise-model frame, 10 ms
 
 export interface Options {
   channels: 1 | 2;
@@ -71,7 +80,8 @@ export interface Result {
 
 export interface Deps {
   storage: Storage;
-  denoiser: DenoiserFactory;
+  /** Runs the front end (resample, high-pass, noise reduction, features). */
+  frontEnd: FrontEnd;
   onProgress(p: Progress): void;
   /** Throws if the run was cancelled. */
   checkCancel(): void;
@@ -121,27 +131,27 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
     });
   };
 
-  const expected = Math.max(1, source.info.duration * source.info.sampleRate);
+  const R = source.info.sampleRate;
+  const expected = Math.max(1, source.info.duration * WORK_RATE);
 
-  // ---- Front end: decode → mix → 48 kHz → high-pass → noise reduction.
-  const toWork = new Resampler(source.info.sampleRate, WORK_RATE, C);
-  const hp = Array.from({ length: C }, () =>
-    opts.rumble ? butterworthHighPass(4, 80, WORK_RATE) : butterworthHighPass(2, 20, WORK_RATE),
-  );
-  const inputMeter = new LoudnessMeter(WORK_RATE, C);
-  const insts = await Promise.all(Array.from({ length: opts.noise ? C : 1 }, () => deps.denoiser.create()));
-  const denoise = new DenoiseStream(insts, C, opts.noise);
-  const features = new HopFeatures(WORK_RATE, C, HOP, CROSSOVER_HZ);
+  // ---- Front end, in blocks that may run in parallel (see frontend.ts).
+  // Results are taken in order and assembled here.
+  const fe = deps.frontEnd;
+  const feOpts: FrontEndOptions = { channels: C, rumble: opts.rumble, noise: opts.noise, inRate: R };
+  const vad = new F32List(); // voice probability per 10 ms frame
+  const features = { kAcc: new F32List(), rAcc: new F32List(), hAcc: new F32List() };
+  const inputSegments: Float64Array[] = [];
+  const nrBefore: Float32Array[] = [];
+  const nrAfter: Float32Array[] = [];
   const delay = Array.from({ length: C }, () => new Fifo());
   let cleaned = 0; // samples that went into the delay line
-
   // ---- Gain plan, finalized a segment at a time.
   const gb = new F32List(); // linear broadband gain per hop
   const gh = new F32List(); // linear gain above the crossover per hop
   let spikesTamed = 0;
   const vadAt = (h: number) => {
-    const v = denoise.vad.view();
-    return v[Math.min(v.length - 1, Math.floor((h * HOP) / denoise.frameSize))] ?? 0;
+    const v = vad.view();
+    return v[Math.min(v.length - 1, Math.floor((h * HOP) / VAD_FRAME))] ?? 0;
   };
   const planUpTo = (final: boolean) => {
     const avail = features.kAcc.length;
@@ -211,38 +221,81 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
     encode(lim.push(toOut.push(p)));
   };
 
-  const afterResample = (p: Planar) => {
-    if (!p[0].length) return;
-    inputMeter.push(p);
-    for (let c = 0; c < C; c++) hp[c].process(p[c]);
-    afterDenoise(denoise.push(p));
-  };
-  const afterDenoise = (p: Planar) => {
-    if (!p[0].length) return;
-    features.push(p);
-    for (let c = 0; c < C; c++) delay[c].push(p[c]);
-    cleaned += p[0].length;
+  let fadeIn: Planar | null = null; // previous block's audio past its end
+  const consume = (r: BlockResult) => {
+    if (fadeIn) {
+      // Linear crossfade: the two versions are almost identical (correlated).
+      const n = Math.min(fadeIn[0].length, r.audio[0].length);
+      for (let c = 0; c < C; c++) {
+        const a = fadeIn[c], b = r.audio[c];
+        for (let i = 0; i < n; i++) {
+          const w = (i + 0.5) / n;
+          b[i] = a[i] * (1 - w) + b[i] * w;
+        }
+      }
+    }
+    fadeIn = r.fadeOut[0].length ? r.fadeOut : null;
+    for (let c = 0; c < C; c++) delay[c].push(r.audio[c]);
+    cleaned += r.audio[0].length;
+    for (const v of r.vad) vad.push(v);
+    for (let i = 0; i < r.k.length; i++) {
+      features.kAcc.push(r.k[i]);
+      features.rAcc.push(r.raw[i]);
+      features.hAcc.push(r.hf[i]);
+    }
+    inputSegments.push(r.loudness);
+    nrBefore.push(r.nrBefore);
+    nrAfter.push(r.nrAfter);
   };
 
-  let decoded = 0;
-  try {
-    for await (const chunk of source.chunks()) {
-      checkCancel();
-      decoded += chunk[0].length;
-      afterResample(toWork.push(mix(chunk, C)));
-      planUpTo(false);
-      apply(false);
-      report("process", decoded / expected);
-      await yieldToEvents();
-      if (deps.gate) await deps.gate();
+  // Mixed input not yet handed to a block; `bufStart` is its first sample.
+  const buf = Array.from({ length: C }, () => new Fifo());
+  let bufStart = 0;
+  let nextStart = 0; // second the next block starts at
+  const inflight: Promise<BlockResult>[] = [];
+  const submit = (end: number | null) => {
+    const from = Math.max(0, nextStart - LEAD_SECONDS);
+    const a = from * R - bufStart;
+    const b = end === null ? buf[0].length : (end + TAIL_SECONDS) * R - bufStart;
+    const input = buf.map((f) => f.peek(a, b - a));
+    const p = fe.run({ start: nextStart, end, from, input }, feOpts);
+    p.catch(() => {}); // awaited in order below
+    inflight.push(p);
+    if (end !== null) {
+      const drop = (end - LEAD_SECONDS) * R - bufStart;
+      if (drop > 0) {
+        for (const f of buf) f.shift(drop);
+        bufStart += drop;
+      }
+      nextStart = end;
     }
-    afterResample(toWork.flush());
-    afterDenoise(denoise.flush());
-  } finally {
-    for (const d of insts) d.destroy();
+  };
+  const takeOldest = async () => {
+    consume(await inflight.shift()!);
+    checkCancel();
+    planUpTo(false);
+    apply(false);
+    report("process", cleaned / expected);
+  };
+
+  // At most one block waits in the queue for each thread.
+  const maxInflight = fe.concurrency + 1;
+  for await (const chunk of source.chunks()) {
+    checkCancel();
+    const m = mix(chunk, C);
+    for (let c = 0; c < C; c++) buf[c].push(m[c]);
+    // Hand over a block once there's input past its tail (so it isn't the last).
+    while (bufStart + buf[0].length > (nextStart + BLOCK_SECONDS + TAIL_SECONDS) * R) {
+      submit(nextStart + BLOCK_SECONDS);
+      while (inflight.length >= maxInflight) await takeOldest();
+    }
+    await yieldToEvents();
+    if (deps.gate) await deps.gate();
   }
+  submit(null);
+  while (inflight.length) await takeOldest();
+
   if (cleaned < WORK_RATE * 0.5) throw new Error("This recording is too short to process (under half a second).");
-  features.finish();
   planUpTo(true);
   apply(true);
   encode(lim.push(toOut.flush()));
@@ -254,8 +307,8 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
     bitrate,
     channels: C,
     targetLufs: TARGET_LUFS + trimDb,
-    inputLufs: inputMeter.integrated(),
-    noiseReductionDb: denoise.noiseReductionDb(),
+    inputLufs: gatedLoudness(blockPowers(inputSegments)),
+    noiseReductionDb: noiseReductionDb(concat(nrBefore), concat(nrAfter)),
     spikesTamed,
   };
   out.append(encoder.finalize().slice());
@@ -277,6 +330,26 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
     loudnessOk: Math.abs(v.lufs - (TARGET_LUFS + trimDb)) <= LOUDNESS_TOLERANCE,
     peakOk: v.tp <= MAX_TRUE_PEAK + trimDb,
   };
+}
+
+function concat(parts: Float32Array[]): Float32Array {
+  const out = new Float32Array(parts.reduce((s, p) => s + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+
+/** BS.1770 gating blocks (400 ms, step 100 ms) from 100 ms segment sums at 48 kHz. */
+function blockPowers(parts: Float64Array[]): Float64Array {
+  const s = Float64Array.from(parts.flatMap((p) => Array.from(p)));
+  const nb = Math.max(0, s.length - 3);
+  const out = new Float64Array(nb);
+  const denom = (4 * WORK_RATE) / 10;
+  for (let j = 0; j < nb; j++) out[j] = (s[j] + s[j + 1] + s[j + 2] + s[j + 3]) / denom;
+  return out;
 }
 
 /** Mixes or duplicates channels to `C`. */
