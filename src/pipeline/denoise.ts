@@ -27,7 +27,8 @@ export const rnnoiseFactory: DenoiserFactory = {
     const scaled = new Float32Array(r.frameSize);
     return {
       frameSize: r.frameSize,
-      delay: r.frameSize,
+      // Measured: output lags input by two frames (frame + look-ahead), 20 ms.
+      delay: 2 * r.frameSize,
       process(frame: Float32Array) {
         // RNNoise expects 16-bit-scaled samples.
         for (let i = 0; i < frame.length; i++) scaled[i] = frame[i] * 32768;
