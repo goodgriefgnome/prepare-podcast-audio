@@ -22,21 +22,27 @@
       <!-- Choose a file -->
       <section class="card" id="view-empty">
         <label class="drop" id="drop" for="file">
-          <span class="big">Drop a WAV or MP3 here</span>
+          <span class="big">Drop WAV or MP3 files here</span>
           <span class="small">or</span>
-          <span class="secondary as-button">Choose file…</span>
-          <input type="file" id="file" accept=".wav,.mp3,audio/wav,audio/x-wav,audio/wave,audio/mpeg" />
+          <span class="secondary as-button">Choose files…</span>
+          <input type="file" id="file" multiple accept=".wav,.mp3,audio/wav,audio/x-wav,audio/wave,audio/mpeg" />
         </label>
         <p class="error" id="empty-error" role="alert" hidden></p>
       </section>
 
       <!-- Settings -->
       <section class="card" id="view-ready" hidden>
+        <div class="pager" id="pager" hidden>
+          <button class="secondary pager-btn" id="prev" type="button" aria-label="Previous file">‹ Previous</button>
+          <span class="num hint" id="pager-pos"></span>
+          <button class="secondary pager-btn" id="next" type="button" aria-label="Next file">Next ›</button>
+        </div>
         <div class="file">
           <div class="name" id="ready-name"></div>
-          <button class="link" id="change" type="button">Change file</button>
+          <button class="link" id="change" type="button">Change files</button>
           <div class="meta num" id="ready-meta"></div>
         </div>
+        <p class="error" id="file-error" role="alert" hidden></p>
 
         <div class="group preview" id="preview">
           <div class="row">
@@ -90,11 +96,12 @@
           <span class="label">Output</span>
           <span class="num" id="spec-line"></span>
           <span class="num" id="spec-loud"></span>
-          <span><span id="spec-note"></span> About <span class="num" id="spec-size"></span>.</span>
+          <span><span id="spec-note"></span> About <span class="num" id="spec-size"></span><span id="spec-total"></span>.</span>
         </div>
 
         <p class="error" id="ready-error" role="alert" hidden></p>
         <button class="primary" id="go" type="button">Prepare audio</button>
+        <p class="note" id="batch-note" hidden>These settings apply to every file.</p>
       </section>
 
       <!-- Processing -->
@@ -114,43 +121,51 @@
       </section>
 
       <!-- Done -->
-      <section class="card" id="view-done" hidden>
-        <div class="row">
-          <div class="file grow">
-            <div class="name" id="done-name"></div>
-            <div class="meta num" id="done-meta"></div>
-          </div>
-          <span class="pill" id="done-pill">Ready to publish</span>
-        </div>
-
-        <p class="error" id="done-miss" role="alert" hidden></p>
-
-        <div class="meter">
-          <span class="label">Loudness</span>
-          <div class="scale" aria-hidden="true">
-            <div class="target"></div>
-            <div class="mark before" id="mark-before"></div>
-            <div class="mark after" id="mark-after"></div>
-          </div>
-          <div class="ticks num" aria-hidden="true" id="ticks"></div>
-          <div class="legend">
-            <span><i class="swatch before"></i>Original <span class="num" id="lufs-before"></span></span>
-            <span><i class="swatch after"></i>Prepared <span class="num" id="lufs-after"></span></span>
-            <span><i class="swatch target"></i>Target range</span>
+      <section class="results" id="view-done" hidden>
+        <div class="card">
+          <div class="row">
+            <div class="file grow">
+              <div class="name" id="done-title"></div>
+              <div class="meta" id="done-sub"></div>
+            </div>
+            <button class="secondary" id="again" type="button">Prepare more</button>
           </div>
         </div>
-
-        <div class="stats">
-          <div class="stat"><span class="v num" id="stat-lufs"></span><span class="k">LUFS integrated</span></div>
-          <div class="stat"><span class="v num" id="stat-tp"></span><span class="k">dBTP true peak</span></div>
-          <div class="stat"><span class="v num" id="stat-3"></span><span class="k" id="stat-3-label"></span></div>
-        </div>
-
-        <div class="actions">
-          <a class="primary as-button" id="save" download>Save MP3</a>
-          <button class="secondary" id="again" type="button">Prepare another</button>
-        </div>
+        <div class="results" id="results"></div>
       </section>
+
+      <template id="result-tpl">
+        <section class="card result">
+          <div class="row">
+            <div class="file grow">
+              <div class="name" data-f="name"></div>
+              <div class="meta num" data-f="meta"></div>
+            </div>
+            <span class="pill" data-f="pill"></span>
+          </div>
+          <p class="error" data-f="miss" role="alert" hidden></p>
+          <div class="meter" data-f="meter">
+            <span class="label">Loudness</span>
+            <div class="scale" aria-hidden="true">
+              <div class="target" data-f="target"></div>
+              <div class="mark before" data-f="before"></div>
+              <div class="mark after" data-f="after"></div>
+            </div>
+            <div class="ticks num" aria-hidden="true" data-f="ticks"></div>
+            <div class="legend">
+              <span><i class="swatch before"></i>Original <span class="num" data-f="lufs-before"></span></span>
+              <span><i class="swatch after"></i>Prepared <span class="num" data-f="lufs-after"></span></span>
+              <span><i class="swatch target"></i>Target range</span>
+            </div>
+          </div>
+          <div class="stats" data-f="stats">
+            <div class="stat"><span class="v num" data-f="lufs"></span><span class="k">LUFS integrated</span></div>
+            <div class="stat"><span class="v num" data-f="tp"></span><span class="k">dBTP true peak</span></div>
+            <div class="stat"><span class="v num" data-f="s3"></span><span class="k" data-f="s3-label"></span></div>
+          </div>
+          <a class="primary as-button" data-f="save" download>Save MP3</a>
+        </section>
+      </template>
 
       <p class="foot">Made for spoken-word podcasts. Output is MP3 at 44.1 kHz.</p>
     </main>

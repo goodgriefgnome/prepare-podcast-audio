@@ -6,15 +6,20 @@ import { rnnoiseFactory } from "./pipeline/denoise.ts";
 import { OUT_RATE, processAudio, type Options, type Progress, type Result } from "./pipeline/process.ts";
 
 export type Request =
-  | { type: "probe"; file: File }
-  | { type: "process"; file: File; options: Options }
+  | { type: "probe"; id: number; file: File }
+  /**
+   * Processes one file into `outputName` in the app's private storage.
+   * `fresh` clears outputs from earlier batches first.
+   */
+  | { type: "process"; file: File; options: Options; outputName: string; fresh: boolean }
   /** Streams the first `seconds` of the file as it is (original preview). */
   | { type: "previewOriginal"; file: File; seconds: number }
   /** Streams the first `seconds` of the file processed with `options`. */
   | { type: "previewProcessed"; file: File; options: Options; seconds: number };
 
 export type Response =
-  | { type: "info"; info: AudioInfo }
+  | { type: "info"; id: number; info: AudioInfo }
+  | { type: "probeError"; id: number; message: string }
   | { type: "progress"; progress: Progress }
   | { type: "done"; result: Result; output: Blob }
   | { type: "error"; message: string; userFacing: boolean }
@@ -45,8 +50,13 @@ self.onmessage = async (e: MessageEvent<Request>) => {
   const msg = e.data;
   try {
     if (msg.type === "probe") {
-      const src = await openAudio(msg.file, msg.file.name);
-      post({ type: "info", info: src.info });
+      try {
+        const src = await openAudio(msg.file, msg.file.name);
+        post({ type: "info", id: msg.id, info: src.info });
+      } catch (err) {
+        const message = err instanceof UnsupportedFileError ? err.message : "This file couldn’t be read.";
+        post({ type: "probeError", id: msg.id, message });
+      }
       return;
     }
     if (msg.type === "previewOriginal") {
@@ -75,9 +85,10 @@ self.onmessage = async (e: MessageEvent<Request>) => {
       return;
     }
     const src = await openAudio(msg.file, msg.file.name);
-    const storage = await OpfsStorage.open("work");
+    const storage = await OpfsStorage.open("work", msg.fresh);
     const result = await processAudio(src, msg.options, {
       storage,
+      outputName: msg.outputName,
       denoiser: rnnoiseFactory,
       onProgress: (progress) => post({ type: "progress", progress }),
       checkCancel: () => {},

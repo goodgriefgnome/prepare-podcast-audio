@@ -102,13 +102,15 @@ export class OpfsStorage implements Storage {
   private handles = new Map<string, SyncHandle>();
   private constructor(private dir: FileSystemDirectoryHandle) {}
 
-  static async open(folder: string): Promise<OpfsStorage> {
+  /** `clear`: remove everything left from earlier runs first. */
+  static async open(folder: string, clear = true): Promise<OpfsStorage> {
     const root = await navigator.storage.getDirectory();
-    // Clear anything left behind by an earlier run that was interrupted.
-    try {
-      await root.removeEntry(folder, { recursive: true });
-    } catch {
-      /* not there */
+    if (clear) {
+      try {
+        await root.removeEntry(folder, { recursive: true });
+      } catch {
+        /* not there */
+      }
     }
     return new OpfsStorage(await root.getDirectoryHandle(folder, { create: true }));
   }

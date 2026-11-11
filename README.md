@@ -25,6 +25,10 @@ Each step can be turned off in the UI except the loudness and peak stages.
 
 Because gains are planned with about a minute of look-ahead, the level stages can look ahead and behind instead of reacting the way a real-time plugin does.
 
+## Several files
+
+Several files can be chosen or dropped at once. One set of settings applies to all of them; mono recordings always get mono sound. Previous/Next on the settings screen step through the files, and the preview follows. Files are processed one after another, and the results list shows each file's loudness and peak with its own Save button. Files that can't be read are skipped and listed as failed.
+
 ## Preview
 
 The settings screen previews the first 3 minutes with one player and an Original/Processed switch that keeps the playback position. The original plays straight away. The processed version streams from the same pipeline (without MP3 encoding) in a separate worker, starting the first time Play or Processed is pressed. It begins once about 85 s of input has been read, because of the look-ahead, and it restarts whenever a setting changes.
@@ -61,7 +65,7 @@ node --experimental-transform-types test/run.ts input.wav output.mp3 [mono|stere
 Drive the built app end to end in Chromium (after `npx vite preview --port 4173`):
 
 ```bash
-node test/e2e.cjs input.wav output.mp3 [stereo] [screenshotDir]
+node test/e2e.cjs input.wav[,more.mp3,...] output.mp3-or-dir [stereo] [screenshotDir]
 ```
 
 `dist/` is a static site and can be served from any HTTPS host. OPFS and service workers need a secure context.
