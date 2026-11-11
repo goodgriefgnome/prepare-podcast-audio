@@ -1,6 +1,7 @@
 import "./style.css";
 import type { AudioInfo } from "./io/source.ts";
 import { MAX_TRUE_PEAK, TARGET_LUFS, workingBytes, type Options, type Result, type Stage } from "./pipeline/process.ts";
+import { Preview } from "./preview.ts";
 import type { Request, Response } from "./worker.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -14,6 +15,9 @@ const views = {
 type View = keyof typeof views;
 function show(v: View) {
   for (const [k, el] of Object.entries(views)) el.hidden = k !== v;
+  // The preview only runs while the settings screen is showing.
+  if (v === "ready" && file && info) preview?.setFile(file, info.duration, options());
+  else preview?.stop();
 }
 
 let worker = newWorker();
@@ -104,6 +108,24 @@ function onInfo(i: AudioInfo) {
   show("ready");
 }
 
+// ---------------------------------------------------------------- preview
+
+const preview: Preview | null = new Preview({
+  root: $("preview"),
+  play: $<HTMLButtonElement>("pv-play"),
+  original: $<HTMLButtonElement>("pv-original"),
+  processed: $<HTMLButtonElement>("pv-processed"),
+  seek: $<HTMLInputElement>("pv-seek"),
+  time: $("pv-time"),
+  status: $("pv-status"),
+});
+function settingsChanged() {
+  if (file && info && !views.ready.hidden) preview?.setOptions(options());
+}
+for (const id of ["c-rumble", "c-noise", "c-spikes", "c-sibilance", "c-level"]) {
+  $(id).addEventListener("change", settingsChanged);
+}
+
 // ---------------------------------------------------------------- settings
 
 function setChannels(c: 1 | 2) {
@@ -119,6 +141,7 @@ function setChannels(c: 1 | 2) {
   const kbps = c === 1 ? 128 : 192;
   $("spec-line").textContent = `MP3 · joint stereo${c === 1 ? " (mono sound)" : ""} · ${kbps}\u00a0kbps CBR · 44.1\u00a0kHz`;
   $("spec-size").textContent = info ? fmtBytes((info.duration * kbps * 1000) / 8).replace(" ", "\u00a0") : "";
+  settingsChanged();
 }
 
 // Output level: a plain gain after the limiter, in 3 dB steps.
@@ -148,6 +171,7 @@ function updateTrim() {
   } catch {
     /* storage unavailable */
   }
+  settingsChanged();
 }
 trimInput.addEventListener("input", updateTrim);
 updateTrim();
@@ -334,9 +358,6 @@ function onWorkerMessage(m: Response) {
       break;
     case "done":
       onDone(m.result, m.output);
-      break;
-    case "cancelled":
-      show("ready");
       break;
     case "error":
       failed(m.userFacing ? m.message : `Something went wrong while processing: ${m.message}`);

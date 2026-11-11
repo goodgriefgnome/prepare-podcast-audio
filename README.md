@@ -25,6 +25,10 @@ Each step can be turned off in the UI except the loudness and peak stages.
 
 Because gains are planned with about a minute of look-ahead, the level stages can look ahead and behind instead of reacting the way a real-time plugin does.
 
+## Preview
+
+The settings screen previews the first 3 minutes with one player and an Original/Processed switch that keeps the playback position. The original plays straight away. The processed version streams from the same pipeline (without MP3 encoding) in a separate worker, starting the first time Play or Processed is pressed. It begins once about 85 s of input has been read, because of the look-ahead, and it restarts whenever a setting changes.
+
 ## Long recordings
 
 The whole job is a single streaming pass over the input, plus a check of the finished MP3. Audio is never held in memory as a whole, and the only file written is the MP3 (in the browser's Origin Private File System).

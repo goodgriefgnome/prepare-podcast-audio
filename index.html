@@ -38,6 +38,22 @@
           <div class="meta num" id="ready-meta"></div>
         </div>
 
+        <div class="group preview" id="preview">
+          <div class="row">
+            <span class="label">Preview · first 3 minutes</span>
+            <span class="num hint" id="pv-time">0:00 / 3:00</span>
+          </div>
+          <div class="pv-controls">
+            <button class="secondary pv-play" id="pv-play" type="button" aria-pressed="false">Play</button>
+            <div class="seg" role="group" aria-label="Version to hear">
+              <button id="pv-original" type="button" aria-pressed="true">Original</button>
+              <button id="pv-processed" type="button" aria-pressed="false">Processed</button>
+            </div>
+          </div>
+          <input type="range" id="pv-seek" min="0" max="180" step="0.1" value="0" aria-label="Preview position" />
+          <p class="hint pv-status" id="pv-status" role="status" hidden></p>
+        </div>
+
         <div class="group">
           <div class="row">
             <span class="label" id="ch-label">Output channels</span>

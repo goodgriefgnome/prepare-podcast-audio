@@ -89,6 +89,16 @@ header p { margin: 4px 0 0; color: var(--muted) }
 
 input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent) }
 
+.preview { background: var(--bg); border-radius: 10px; padding: 12px 14px }
+.pv-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center }
+.pv-play { min-width: 92px; padding: 7px 16px }
+.pv-status { margin: 0 }
+/* Shade the part of the seek bar that has audio ready. */
+#pv-seek { --avail: 0%; height: 6px; border-radius: 99px; appearance: none; -webkit-appearance: none;
+  background: linear-gradient(to right, color-mix(in srgb, var(--accent) 40%, var(--meter-bg)) var(--avail), var(--meter-bg) var(--avail)) }
+#pv-seek::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 0 }
+#pv-seek::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 0 }
+
 .spec { background: var(--accent-soft); border-radius: 10px; padding: 12px 14px; font-size: 13px; display: grid; gap: 2px }
 
 .primary, .secondary { font: inherit; border-radius: 10px; cursor: pointer; text-align: center; text-decoration: none; display: inline-block }
