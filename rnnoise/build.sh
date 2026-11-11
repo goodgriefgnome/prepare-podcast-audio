@@ -43,9 +43,11 @@ flags_for() {
     o2) echo "-O2" ;;                                    # like @shiguredo/rnnoise-wasm
     o3) echo "-O3" ;;
     simd) echo "-O3 -msimd128" ;;                        # compiler auto-vectorization only
-    sse41) echo "-O3 -msimd128 -msse4.1" ;;              # RNNoise's hand-written x86 paths, mapped to Wasm SIMD
-    avx2) echo "-O3 -msimd128 -mavx2 -mfma" ;;
-    release) echo "-O3 -msimd128 -msse4.1" ;;
+    # RNNoise's hand-written x86 code, which Emscripten maps to Wasm SIMD.
+    # (Its SSE-only path still needs the AVX types, so -mavx is the minimum.)
+    avx) echo "-O3 -msimd128 -mavx" ;;
+    avx2) echo "-O3 -msimd128 -mavx2" ;;
+    release) echo "-O3 -msimd128 -mavx2" ;;
     *) echo "unknown variant $1" >&2; return 1 ;;
   esac
 }
@@ -55,7 +57,9 @@ for v in "${variants[@]}"; do
   flags=$(flags_for "$v")
   echo "== $v: $flags"
   # shellcheck disable=SC2086
-  if ! emcc $flags -g0 -Iinclude -Isrc "${sources[@]}" \
+  # DISABLE_DEBUG_FLOAT is what RNNoise's configure sets by default: use
+  # the quantized weights only, and leave out the float copies.
+  if ! emcc $flags -g0 -DDISABLE_DEBUG_FLOAT -Iinclude -Isrc "${sources[@]}" \
     -sSTANDALONE_WASM=1 --no-entry \
     -sEXPORTED_FUNCTIONS="$exports" \
     -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=256KB -sFILESYSTEM=0 \
