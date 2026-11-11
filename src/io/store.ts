@@ -11,6 +11,8 @@ export interface SampleStore {
 export interface ByteStore {
   readonly size: number;
   append(b: Uint8Array): void;
+  /** A copy of everything written so far. */
+  snapshot(): Uint8Array;
 }
 
 /** Where intermediate and output files live. */
@@ -94,6 +96,16 @@ export class HandleByteStore implements ByteStore {
       off += w;
     }
     this.size += b.length;
+  }
+  snapshot(): Uint8Array {
+    const out = new Uint8Array(this.size);
+    let off = 0;
+    while (off < out.length) {
+      const r = this.h.read(out.subarray(off), { at: off });
+      if (r <= 0) break;
+      off += r;
+    }
+    return out.subarray(0, off);
   }
 }
 

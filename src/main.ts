@@ -1,287 +1,759 @@
 import "./style.css";
 import type { AudioInfo } from "./io/source.ts";
-import { MAX_TRUE_PEAK, TARGET_LUFS, workingBytes, type Options, type Result, type Stage } from "./pipeline/process.ts";
-import { Preview } from "./preview.ts";
+import { MAX_TRUE_PEAK, TARGET_LUFS, workingBytes, type Options, type Result } from "./pipeline/process.ts";
 import type { Request, Response } from "./worker.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const views = {
-  empty: $("view-empty"),
-  ready: $("view-ready"),
-  proc: $("view-proc"),
-  done: $("view-done"),
-};
-type View = keyof typeof views;
-function show(v: View) {
-  for (const [k, el] of Object.entries(views)) el.hidden = k !== v;
-  // The preview only runs while the settings screen is showing.
-  if (v === "ready") showCurrent();
-  else preview.stop();
-}
-
-/** One chosen file and what happened to it. */
-interface Item {
-  file: File;
-  info: AudioInfo | null;
-  /** Why it can't be processed (unreadable or unsupported). */
-  error: string | null;
-  result: Result | null;
-  /** Object URL of the finished MP3. */
-  url: string | null;
-  /** Why processing failed. */
-  failed: string | null;
-}
-
-let items: Item[] = [];
-let current = 0;
-let channels: 1 | 2 = 1;
-let probeBatch = 0;
-
-let worker = newWorker();
-function newWorker(): Worker {
-  const w = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
-  w.onmessage = (e: MessageEvent<Response>) => onWorkerMessage(e.data);
-  w.onerror = (e) => {
-    console.error(e);
-    if (!views.proc.hidden) fileFailed("Something went wrong while processing this file.");
-  };
-  return w;
-}
-const send = (r: Request) => worker.postMessage(r);
-
-const usable = () => items.filter((it) => it.info && !it.error);
-
 // ---------------------------------------------------------------- formatting
 
-function fmtDuration(s: number): string {
-  s = Math.round(s);
+function clock(s: number): string {
+  s = Math.max(0, Math.floor(s));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  const mm = h ? String(m).padStart(2, "0") : String(m);
-  return `${h ? h + ":" : ""}${mm}:${String(sec).padStart(2, "0")}`;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
 }
 function fmtBytes(b: number): string {
   if (b >= 1e9) return `${(b / 1e9).toFixed(2)} GB`;
   if (b >= 1e6) return `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB`;
   return `${Math.max(1, Math.round(b / 1e3))} KB`;
 }
-const minus = (s: string) => s.replace("-", "−");
+const minus = (s: string | number) => String(s).replace("-", "−");
 const fmtDb = (v: number, digits = 1) => (Number.isFinite(v) ? minus(v.toFixed(digits)) : "—");
-function fmtRate(r: number): string {
-  return `${(r / 1000).toFixed(r % 1000 ? 1 : 0)} kHz`;
-}
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const fmtRate = (r: number) => `${(r / 1000).toFixed(r % 1000 ? 1 : 0)} kHz`;
+const nb = (s: string) => s.replace(/ /g, " ");
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-// ---------------------------------------------------------------- choose
+// ---------------------------------------------------------------- state
 
-const fileInput = $<HTMLInputElement>("file");
-const drop = $("drop");
-fileInput.addEventListener("change", () => {
-  if (fileInput.files?.length) choose([...fileInput.files]);
-  fileInput.value = "";
-});
-for (const t of [drop, document.body]) {
-  t.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    if (!views.empty.hidden) drop.classList.add("over");
-  });
-  t.addEventListener("dragleave", () => drop.classList.remove("over"));
-  t.addEventListener("drop", (e) => {
-    e.preventDefault();
-    drop.classList.remove("over");
-    const files = [...((e as DragEvent).dataTransfer?.files ?? [])];
-    if (files.length && views.proc.hidden) choose(files);
-  });
-}
+type Status = "probing" | "queued" | "working" | "ready" | "failed";
 
-function emptyError(msg: string | null) {
-  const el = $("empty-error");
-  el.textContent = msg ?? "";
-  el.hidden = !msg;
+interface Item {
+  id: number;
+  file: File;
+  info: AudioInfo | null;
+  /** Set when the file can't be read at all. */
+  unreadable: string | null;
+  status: Status;
+  progress: number;
+  /** Seconds of MP3 written so far. */
+  outputSeconds: number;
+  result: Result | null;
+  /** The finished MP3 and its object URL. */
+  blob: Blob | null;
+  url: string | null;
+  /** Why processing failed. */
+  failure: string | null;
+  /** Object URL of the original, made when first played. */
+  originalUrl: string | null;
+  /** Counts runs, so each run writes a file of its own. */
+  run: number;
+  row: HTMLLIElement;
 }
 
-function choose(files: File[]) {
-  if (!views.proc.hidden) return;
-  emptyError(null);
-  releaseOutputs();
-  probeBatch++;
-  items = files.map((file) => ({ file, info: null, error: null, result: null, url: null, failed: null }));
-  current = 0;
-  items.forEach((it, i) => send({ type: "probe", id: probeBatch * 10000 + i, file: it.file }));
-}
+let items: Item[] = [];
+let nextId = 1;
+let paused = false;
+let priority: number | null = null; // a file someone wants to hear next
+let jobStarted = 0; // when the current file started (for the time estimate)
+let firstJob = true;
 
-function onProbe(id: number, info: AudioInfo | null, error: string | null) {
-  if (Math.floor(id / 10000) !== probeBatch) return; // an older selection
-  const it = items[id % 10000];
-  if (!it) return;
-  it.info = info;
-  it.error = error;
-  if (items.some((x) => !x.info && !x.error)) return; // still probing
-  const ok = usable();
-  if (!ok.length) {
-    emptyError(
-      items.length === 1
-        ? items[0].error
-        : `None of these files can be processed. ${items.map((x) => `${x.file.name}: ${x.error}`).join(" ")}`,
-    );
-    show("empty");
-    return;
-  }
-  current = items.findIndex((x) => x.info && !x.error);
-  const anyStereo = ok.some((x) => x.info!.channels >= 2);
-  $<HTMLButtonElement>("ch-stereo").disabled = !anyStereo;
-  setChannels(1);
-  $("ready-error").hidden = true;
-  show("ready");
-}
+// ---------------------------------------------------------------- settings
 
-// ---------------------------------------------------------------- settings screen
-
-const preview = new Preview({
-  root: $("preview"),
-  play: $<HTMLButtonElement>("pv-play"),
-  original: $<HTMLButtonElement>("pv-original"),
-  processed: $<HTMLButtonElement>("pv-processed"),
-  seek: $<HTMLInputElement>("pv-seek"),
-  time: $("pv-time"),
-  status: $("pv-status"),
-});
-
-/** Shows the current file's details and points the preview at it. */
-function showCurrent() {
-  const it = items[current];
-  if (!it) return;
-  const multi = items.length > 1;
-  $("pager").hidden = !multi;
-  $("batch-note").hidden = usable().length < 2;
-  $("pager-pos").textContent = `File ${current + 1} of ${items.length}`;
-  $<HTMLButtonElement>("prev").disabled = current === 0;
-  $<HTMLButtonElement>("next").disabled = current === items.length - 1;
-  $("ready-name").textContent = it.file.name;
-  const i = it.info;
-  if (i && !it.error) {
-    const ch = i.channels === 1 ? "mono" : i.channels === 2 ? "stereo" : `${i.channels} channels`;
-    $("ready-meta").textContent = [
-      (i.durationIsEstimate ? "about " : "") + fmtDuration(i.duration),
-      fmtRate(i.sampleRate),
-      `${i.detail} ${ch}`,
-      fmtBytes(it.file.size),
-    ].join(" · ");
-  } else {
-    $("ready-meta").textContent = fmtBytes(it.file.size);
-  }
-  $("file-error").textContent = it.error ? `${it.error} This file will be skipped.` : "";
-  $("file-error").hidden = !it.error;
-  $("preview").hidden = !!it.error;
-  if (i && !it.error) preview.setFile(it.file, i.duration, optionsFor(it));
-  else preview.stop();
+const TOGGLES = ["t-rumble", "t-noise", "t-spikes", "t-ess", "t-level"] as const;
+interface Controls {
+  channels: 1 | 2;
+  level: number;
+  toggles: Record<(typeof TOGGLES)[number], boolean>;
 }
-$("prev").addEventListener("click", () => {
-  if (current > 0) {
-    current--;
-    showCurrent();
-  }
-});
-$("next").addEventListener("click", () => {
-  if (current < items.length - 1) {
-    current++;
-    showCurrent();
-  }
-});
+let uiChannels: 1 | 2 = 1;
+const LEVEL_KEY = "ppa.outputTrimDb";
 
-function settingsChanged() {
-  const it = items[current];
-  if (it?.info && !it.error && !views.ready.hidden) preview.setOptions(optionsFor(it));
-}
-for (const id of ["c-rumble", "c-noise", "c-spikes", "c-sibilance", "c-level"]) {
-  $(id).addEventListener("change", settingsChanged);
-}
-
-function setChannels(c: 1 | 2) {
-  channels = c;
-  $("ch-mono").setAttribute("aria-pressed", String(c === 1));
-  $("ch-stereo").setAttribute("aria-pressed", String(c === 2));
-  const ok = usable();
-  const monoCount = ok.filter((x) => x.info!.channels === 1).length;
-  $("ch-hint").textContent =
-    monoCount === ok.length
-      ? ok.length === 1
-        ? "Your recording is mono, so both speakers get the same sound."
-        : "Your recordings are mono, so both speakers get the same sound."
-      : c === 1
-        ? "Best for voice: both speakers get the same sound, so nobody is stuck in one ear."
-        : `Keeps the left–right mix. Use if you have music or a deliberate stereo mix. The file is 50% larger.${monoCount ? " Mono recordings stay mono sound." : ""}`;
-  const kbps = c === 1 ? 128 : 192;
-  $("spec-line").textContent = `MP3 · joint stereo${c === 1 ? " (mono sound)" : ""} · ${kbps} kbps CBR · 44.1 kHz`;
-  const bytes = ok.reduce((s, x) => s + workingBytes(x.info!.duration, Math.min(c, x.info!.channels)), 0);
-  $("spec-size").textContent = ok.length ? fmtBytes(bytes).replace(" ", "\u00a0") : "";
-  $("spec-total").textContent = ok.length > 1 ? " in total" : "";
-  settingsChanged();
-}
-$("ch-mono").addEventListener("click", () => setChannels(1));
-$("ch-stereo").addEventListener("click", () => {
-  if (!$<HTMLButtonElement>("ch-stereo").disabled) setChannels(2);
-});
-
-// Output level: a plain gain after the limiter, in 3 dB steps.
-const trimInput = $<HTMLInputElement>("trim");
-const TRIM_KEY = "ppa.outputTrimDb";
-try {
-  const saved = localStorage.getItem(TRIM_KEY);
-  if (saved !== null && Number.isFinite(Number(saved))) trimInput.value = saved;
-} catch {
-  /* storage unavailable */
-}
-function trimDb(): number {
-  return Math.min(0, Math.round(Number(trimInput.value) / 3) * 3);
-}
-function updateTrim() {
-  const t = trimDb();
-  const nb = (s: string) => s.replace(/ /g, " ");
-  $("trim-value").textContent = t === 0 ? "0 dB" : `${minus(String(t))} dB`;
-  $("trim-hint").textContent =
-    t === 0
-      ? "Apple’s recommended loudness. Turn it down if your episodes sound louder than other shows."
-      : `${minus(String(-t))} dB quieter than Apple’s recommendation, applied after everything else.`;
-  $("spec-loud").textContent = `${nb(`${minus(String(-16 + t))} LUFS`)} integrated · peaks ≤ ${nb(`${minus(String(-1 + t))} dBTP`)}`;
-  $("spec-note").textContent = t === 0 ? "Meets Apple Podcasts guidelines." : "Quieter than Apple’s −16 LUFS recommendation.";
-  try {
-    localStorage.setItem(TRIM_KEY, String(t));
-  } catch {
-    /* storage unavailable */
-  }
-  settingsChanged();
-}
-trimInput.addEventListener("input", updateTrim);
-updateTrim();
-
-$("change").addEventListener("click", () => {
-  show("empty");
-  fileInput.click();
-});
-
-/** The shared settings, with mono sound for mono recordings. */
-function optionsFor(it: Item): Options {
-  const on = (id: string) => $<HTMLInputElement>(id).checked;
+function readControls(): Controls {
   return {
-    channels: it.info && it.info.channels === 1 ? 1 : channels,
-    rumble: on("c-rumble"),
-    noise: on("c-noise"),
-    spikes: on("c-spikes"),
-    sibilance: on("c-sibilance"),
-    level: on("c-level"),
-    outputTrimDb: trimDb(),
+    channels: uiChannels,
+    level: Math.min(0, Math.round(Number($<HTMLInputElement>("level").value) / 3) * 3),
+    toggles: Object.fromEntries(TOGGLES.map((id) => [id, $<HTMLInputElement>(id).checked])) as Controls["toggles"],
   };
 }
 
-// ---------------------------------------------------------------- process
+function showControls(c: Controls) {
+  uiChannels = c.channels;
+  $("ch-mono").setAttribute("aria-pressed", String(c.channels === 1));
+  $("ch-stereo").setAttribute("aria-pressed", String(c.channels === 2));
+  $("ch-hint").textContent =
+    c.channels === 1 ? "Both speakers get the same sound. Best for voice." : "Keeps the left–right mix. Mono recordings stay mono sound.";
+  $<HTMLInputElement>("level").value = String(c.level);
+  $("level-val").textContent = `${minus(c.level)} dB`;
+  $("level-hint").textContent =
+    c.level === 0 ? "Apple’s recommended loudness. Turn it down if your episodes sound louder than other shows." : `${minus(-c.level)} dB quieter than Apple’s recommendation, applied after everything else.`;
+  for (const id of TOGGLES) $<HTMLInputElement>(id).checked = c.toggles[id];
+  $("spec-1").textContent = `MP3 · joint stereo${c.channels === 1 ? " (mono sound)" : ""} · ${c.channels === 1 ? 128 : 192} kbps · 44.1 kHz`;
+  $("spec-2").textContent = `${nb(`${minus(TARGET_LUFS + c.level)} LUFS`)} integrated · peaks ≤ ${nb(`${minus(MAX_TRUE_PEAK + c.level)} dBTP`)}`;
+  $("spec-3").textContent = c.level === 0 ? "Meets Apple Podcasts guidelines." : `Quieter than Apple’s ${minus(TARGET_LUFS)} LUFS recommendation.`;
+}
 
-const STEP_OF: Record<Stage, number> = { process: 0, verify: 1 };
-let startedAt = 0;
-let queue: number[] = [];
-let queuePos = 0;
+try {
+  const saved = Number(localStorage.getItem(LEVEL_KEY));
+  if (localStorage.getItem(LEVEL_KEY) !== null && Number.isFinite(saved)) $<HTMLInputElement>("level").value = String(saved);
+} catch {
+  /* storage unavailable */
+}
+let committed = readControls();
+showControls(committed);
+
+const same = (a: Controls, b: Controls) => JSON.stringify(a) === JSON.stringify(b);
+const redoable = () => items.filter((it) => !it.unreadable && it.status !== "probing");
+
+function controlsChanged() {
+  showControls(readControls());
+  // With nothing to redo, changes apply straight away.
+  if (!redoable().length) commitSettings();
+  renderPending();
+}
+
+function renderPending() {
+  const pending = !same(readControls(), committed);
+  const n = redoable().length;
+  $("pending").hidden = !pending;
+  $("settings-panel").classList.toggle("is-pending", pending);
+  $("apply").textContent = `Apply and reprocess ${plural(n, "file")}`;
+  $("set-hint").textContent = pending ? "Not applied yet" : "Apply to every file";
+}
+
+function commitSettings() {
+  committed = readControls();
+  try {
+    localStorage.setItem(LEVEL_KEY, String(committed.level));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+$("ch-mono").addEventListener("click", () => { uiChannels = 1; controlsChanged(); });
+$("ch-stereo").addEventListener("click", () => { uiChannels = 2; controlsChanged(); });
+$("level").addEventListener("input", controlsChanged);
+for (const id of TOGGLES) $(id).addEventListener("change", controlsChanged);
+$("undo").addEventListener("click", () => { showControls(committed); renderPending(); });
+$("apply").addEventListener("click", () => {
+  commitSettings();
+  restartAll();
+  renderPending();
+});
+
+/** The committed settings for one file (mono recordings always get mono sound). */
+function optionsFor(it: Item): Options {
+  const t = committed.toggles;
+  return {
+    channels: it.info && it.info.channels === 1 ? 1 : committed.channels,
+    rumble: t["t-rumble"],
+    noise: t["t-noise"],
+    spikes: t["t-spikes"],
+    sibilance: t["t-ess"],
+    level: t["t-level"],
+    outputTrimDb: committed.level,
+  };
+}
+
+// ---------------------------------------------------------------- workers
+
+const probeWorker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+probeWorker.onmessage = (e: MessageEvent<Response>) => onMessage(e.data);
+
+let worker: Worker | null = null;
+function procWorker(): Worker {
+  if (!worker) {
+    worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = (e: MessageEvent<Response>) => onMessage(e.data);
+    worker.onerror = (e) => {
+      console.error(e);
+      const it = items.find((x) => x.status === "working");
+      if (it) fail(it, "Something went wrong while processing this file.");
+    };
+    if (paused) worker.postMessage({ type: "pause" } satisfies Request);
+  }
+  return worker;
+}
+/** Stops whatever is being processed (terminating is immediate and releases its file). */
+function stopWorker() {
+  worker?.terminate();
+  worker = null;
+  for (const r of snapshotWaiters.values()) r(null);
+  snapshotWaiters.clear();
+}
+
+const snapshotWaiters = new Map<number, (b: Blob | null) => void>();
+function snapshot(it: Item): Promise<Blob | null> {
+  if (it.status !== "working" || !worker) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    snapshotWaiters.get(it.id)?.(null);
+    snapshotWaiters.set(it.id, resolve);
+    worker!.postMessage({ type: "snapshot", id: it.id } satisfies Request);
+  });
+}
+
+function onMessage(m: Response) {
+  if (m.type === "snapshot") {
+    snapshotWaiters.get(m.id)?.(m.blob);
+    snapshotWaiters.delete(m.id);
+    return;
+  }
+  const it = items.find((x) => x.id === m.id);
+  if (!it) return;
+  switch (m.type) {
+    case "info":
+      it.info = m.info;
+      it.status = "queued";
+      break;
+    case "probeError":
+      it.unreadable = m.message;
+      it.status = "failed";
+      break;
+    case "progress":
+      if (it.status !== "working") return;
+      it.progress = m.progress.fraction;
+      it.outputSeconds = m.progress.outputSeconds;
+      renderRow(it);
+      if (player?.item === it) player.update();
+      renderStatus();
+      return;
+    case "done":
+      if (it.status !== "working") return;
+      it.status = "ready";
+      it.progress = 1;
+      it.result = m.result;
+      it.blob = m.output;
+      it.url = URL.createObjectURL(m.output);
+      it.outputSeconds = m.result.duration;
+      break;
+    case "error":
+      if (it.status !== "working") return;
+      fail(it, m.message);
+      return;
+  }
+  renderAll();
+  pump();
+}
+
+function fail(it: Item, message: string) {
+  it.status = "failed";
+  it.failure = message;
+  // Start the next file in a fresh worker in case this one is in a bad state.
+  stopWorker();
+  renderAll();
+  pump();
+}
+
+// ---------------------------------------------------------------- queue
+
+async function enoughSpaceFor(it: Item): Promise<string | null> {
+  try {
+    const est = await navigator.storage?.estimate?.();
+    if (!est?.quota) return null;
+    const need = workingBytes(it.info!.duration, optionsFor(it).channels) * 1.05;
+    const free = est.quota - (est.usage ?? 0);
+    if (free < need) return `Not enough free storage on this device: the MP3 needs about ${fmtBytes(need)}, and ${fmtBytes(free)} is free.`;
+  } catch {
+    /* unknown: try anyway */
+  }
+  return null;
+}
+
+let pumping = false;
+async function pump() {
+  if (pumping || paused || items.some((x) => x.status === "working")) return;
+  // List order, unless someone asked to hear a file next. Wait for files
+  // still being read so a later file doesn't jump ahead of them.
+  let it = items.find((x) => x.id === priority && x.status === "queued");
+  if (!it) {
+    for (const x of items) {
+      if (x.status === "probing") return;
+      if (x.status === "queued") {
+        it = x;
+        break;
+      }
+    }
+  }
+  if (!it) {
+    renderStatus();
+    keepAwake(false);
+    return;
+  }
+  pumping = true;
+  const problem = await enoughSpaceFor(it);
+  pumping = false;
+  if (it.status !== "queued") return pump(); // removed or changed meanwhile
+  if (problem) {
+    it.status = "failed";
+    it.failure = problem;
+    renderAll();
+    return pump();
+  }
+  if (priority === it.id) priority = null;
+  it.status = "working";
+  it.progress = 0;
+  it.outputSeconds = 0;
+  jobStarted = performance.now();
+  procWorker().postMessage({
+    type: "process",
+    id: it.id,
+    file: it.file,
+    options: optionsFor(it),
+    // A fresh name per run: a stopped run's file can stay locked for a moment.
+    outputName: `out-${it.id}-${++it.run}.mp3`,
+    previous: it.run > 1 ? `out-${it.id}-${it.run - 1}.mp3` : null,
+    fresh: firstJob,
+  } satisfies Request);
+  firstJob = false;
+  keepAwake(true);
+  renderAll();
+}
+
+function clearOutput(it: Item) {
+  if (it.url) URL.revokeObjectURL(it.url);
+  it.url = null;
+  it.blob = null;
+  it.result = null;
+  it.progress = 0;
+  it.outputSeconds = 0;
+  it.failure = null;
+}
+
+/** New settings: every readable file starts again. */
+function restartAll() {
+  stopWorker();
+  player?.outputChanged();
+  for (const it of items) {
+    if (it.unreadable || it.status === "probing") continue;
+    clearOutput(it);
+    it.status = "queued";
+  }
+  renderAll();
+  pump();
+}
+
+function remove(it: Item) {
+  if (player?.item === it) closePlayer();
+  if (it.status === "working") stopWorker();
+  clearOutput(it);
+  if (it.originalUrl) URL.revokeObjectURL(it.originalUrl);
+  it.row.remove();
+  items = items.filter((x) => x !== it);
+  renderAll();
+  renderPending();
+  pump();
+}
+
+$("pause").addEventListener("click", () => {
+  paused = !paused;
+  worker?.postMessage({ type: paused ? "pause" : "resume" } satisfies Request);
+  if (!paused) {
+    jobStarted = performance.now() - estimateElapsed();
+    pump();
+  }
+  keepAwake(!paused && items.some((x) => x.status === "working"));
+  renderAll();
+});
+function estimateElapsed(): number {
+  // Keep the time estimate sensible after a pause.
+  const it = items.find((x) => x.status === "working");
+  return it ? (it.progress * it.info!.duration * 1000) / 4.4 : 0;
+}
+
+// ---------------------------------------------------------------- adding files
+
+function addFiles(files: FileList | File[]) {
+  for (const file of files) {
+    const row = $<HTMLTemplateElement>("row-tpl").content.firstElementChild!.cloneNode(true) as HTMLLIElement;
+    const it: Item = {
+      id: nextId++, file, info: null, unreadable: null, status: "probing", progress: 0, outputSeconds: 0,
+      result: null, blob: null, url: null, failure: null, originalUrl: null, run: 0, row,
+    };
+    const f = (k: string) => row.querySelector<HTMLElement>(`[data-f="${k}"]`)!;
+    f("listen").addEventListener("click", () => (player?.item === it ? closePlayer() : openPlayer(it)));
+    f("remove").addEventListener("click", () => remove(it));
+    f("remove").setAttribute("aria-label", `Remove ${file.name}`);
+    items.push(it);
+    probeWorker.postMessage({ type: "probe", id: it.id, file } satisfies Request);
+  }
+  renderAll();
+  renderPending();
+}
+
+const fileInput = $<HTMLInputElement>("file-input");
+fileInput.addEventListener("change", () => {
+  if (fileInput.files?.length) addFiles([...fileInput.files]);
+  fileInput.value = "";
+});
+const addZone = $("add");
+document.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  addZone.classList.add("over");
+});
+document.addEventListener("dragleave", (e) => {
+  if (!e.relatedTarget) addZone.classList.remove("over");
+});
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+  addZone.classList.remove("over");
+  const files = [...(e.dataTransfer?.files ?? [])];
+  if (files.length) addFiles(files);
+});
+
+// ---------------------------------------------------------------- rendering
+
+/** Download names, made unique. */
+function outputName(it: Item): string {
+  const used = new Set<string>();
+  for (const x of items) {
+    const base = x.file.name.replace(/\.[^.]+$/, "");
+    let name = /\.mp3$/i.test(x.file.name) ? `${base}-prepared.mp3` : `${base}.mp3`;
+    for (let k = 2; used.has(name.toLowerCase()); k++) name = `${base}-${k}.mp3`;
+    used.add(name.toLowerCase());
+    if (x === it) return name;
+  }
+  return "output.mp3";
+}
+
+function chip(it: Item): [string, string] {
+  switch (it.status) {
+    case "probing":
+      return ["queued", "Reading…"];
+    case "queued":
+      return ["queued", priority === it.id ? "Next" : "Waiting"];
+    case "working":
+      return ["working", paused ? "Paused" : `${Math.floor(it.progress * 100)}%`];
+    case "ready":
+      return it.result && !(it.result.loudnessOk && it.result.peakOk) ? ["miss", "Missed target"] : ["ready", "Ready"];
+    case "failed":
+      return ["failed", it.unreadable ? "Can’t read" : "Failed"];
+  }
+}
+
+function renderRow(it: Item) {
+  const f = (k: string) => it.row.querySelector<HTMLElement>(`[data-f="${k}"]`)!;
+  const [cls, text] = chip(it);
+  f("chip").className = `chip ${cls}`;
+  f("chip").textContent = text;
+  f("name").textContent = it.file.name;
+  const i = it.info;
+  f("meta").textContent = i
+    ? [
+        (i.durationIsEstimate ? "about " : "") + clock(i.duration),
+        fmtRate(i.sampleRate),
+        `${i.detail} ${i.channels === 1 ? "mono" : i.channels === 2 ? "stereo" : `${i.channels} channels`}`,
+        fmtBytes(it.file.size),
+      ].join(" · ")
+    : fmtBytes(it.file.size);
+  const res = f("result");
+  res.className = "file-result";
+  res.textContent = "";
+  if (it.status === "failed") {
+    res.classList.add("miss");
+    res.textContent = it.unreadable ?? it.failure ?? "";
+  } else if (it.status === "ready" && it.result) {
+    const r = it.result;
+    const third = r.noiseReductionDb !== null ? `${fmtDb(r.noiseReductionDb, 0)} dB noise` : plural(r.spikesTamed, "loud noise tamed", "loud noises tamed");
+    const line = `${fmtDb(r.outputLufs)} LUFS · ${fmtDb(r.outputTruePeak)} dBTP · ${third} · ${fmtBytes(r.bytes)}`;
+    if (r.loudnessOk && r.peakOk) {
+      res.classList.add("num");
+      res.textContent = line;
+    } else {
+      const misses: string[] = [];
+      if (!r.loudnessOk) misses.push(`loudness is ${fmtDb(r.outputLufs)} LUFS instead of ${fmtDb(r.targetLufs, 0)}`);
+      if (!r.peakOk) misses.push(`true peak is ${fmtDb(r.outputTruePeak)} dBTP, above ${fmtDb(MAX_TRUE_PEAK + r.targetLufs - TARGET_LUFS, 0)}`);
+      res.classList.add("miss");
+      res.textContent = `Missed the target: ${misses.join(", and ")}. This is a bug in the app; the file is still saved as processed.`;
+    }
+  }
+  const listen = f("listen");
+  listen.hidden = !!it.unreadable || it.status === "probing";
+  listen.textContent = player?.item === it ? "Close player" : "Listen";
+  listen.setAttribute("aria-expanded", String(player?.item === it));
+  const save = f("save") as HTMLAnchorElement;
+  save.hidden = it.status !== "ready" || !it.url;
+  if (it.url) {
+    save.href = it.url;
+    save.download = outputName(it);
+  }
+  const bar = f("bar");
+  bar.hidden = it.status !== "working";
+  (bar.firstElementChild as HTMLElement).style.width = `${it.progress * 100}%`;
+}
+
+function renderAll() {
+  const list = $("files");
+  if (!items.length) {
+    list.innerHTML = `<li class="empty"><span class="big">Add your recordings</span><span class="hint">Drop WAV or MP3 files below. Each one starts processing as soon as it’s added, using the settings on the left.</span></li>`;
+  } else {
+    list.querySelector(".empty")?.remove();
+    for (const it of items) {
+      if (it.row.parentElement !== list) list.append(it.row);
+      renderRow(it);
+    }
+  }
+  renderStatus();
+}
+
+function renderStatus() {
+  const usable = items.filter((x) => x.info && !x.unreadable);
+  const total = usable.reduce((s, x) => s + x.info!.duration, 0);
+  const ready = items.filter((x) => x.status === "ready").length;
+  $("files-summary").textContent = items.length ? `${plural(items.length, "file")} · ${clock(total)} of audio · ${ready} ready` : "";
+
+  const todo = items.filter((x) => x.status === "queued" || x.status === "working" || x.status === "probing");
+  const active = usable.filter((x) => x.status !== "failed");
+  const totalDur = active.reduce((s, x) => s + x.info!.duration, 0);
+  const doneDur = active.reduce((s, x) => s + x.info!.duration * (x.status === "ready" ? 1 : x.status === "working" ? x.progress : 0), 0);
+  const frac = totalDur ? doneDur / totalDur : 0;
+  $("overall-bar").style.width = `${frac * 100}%`;
+  $("overall-bar-wrap").setAttribute("aria-valuenow", String(Math.floor(frac * 100)));
+  $("overall-pct").textContent = todo.length ? `${Math.floor(frac * 100)}%` : "";
+  // Speed from the current file; about 4× real time until there's data.
+  const cur = items.find((x) => x.status === "working");
+  const elapsed = (performance.now() - jobStarted) / 1000;
+  const speed = cur && elapsed > 5 && cur.progress > 0.02 ? (cur.progress * cur.info!.duration) / elapsed : 4;
+  const left = (totalDur - doneDur) / Math.max(0.5, speed);
+  let text: string;
+  if (!items.length) text = "Add files to start.";
+  else if (!todo.length) text = ready ? (ready === items.length ? "All files are ready to save." : "Finished. Some files couldn’t be processed.") : "Nothing to process.";
+  else if (paused) text = `Paused · ${plural(todo.length, "file")} to go`;
+  else text = `Processing · ${plural(todo.length, "file")} to go · ${left < 60 ? "under a minute" : `about ${Math.round(left / 60)} min`} left`;
+  $("overall-text").textContent = text;
+  $("pause").hidden = !todo.length;
+  $("pause").textContent = paused ? "Resume" : "Pause";
+}
+
+// ---------------------------------------------------------------- player
+
+/**
+ * Plays the original file or the MP3. While a file is processing, "Processed"
+ * plays a copy of what has been written so far; each press of Play takes a
+ * fresh copy, so the length grows.
+ */
+class Player {
+  which: "original" | "processed" = "original";
+  playing = false;
+  pos = 0;
+  private audio = new Audio();
+  private snapUrl: string | null = null;
+  private note = "";
+  /** The note says to wait for output; it clears once there is some. */
+  private waitingNote = false;
+  private el: HTMLElement;
+
+  constructor(readonly item: Item) {
+    this.el = item.row.querySelector<HTMLElement>('[data-f="player"]')!;
+    this.el.hidden = false;
+    this.which = item.status === "ready" ? "processed" : "original";
+    const q = (k: string) => this.el.querySelector<HTMLElement>(`[data-f="${k}"]`)!;
+    q("play").onclick = () => (this.playing ? this.pause() : void this.play());
+    q("original").onclick = () => this.select("original");
+    q("processed").onclick = () => this.select("processed");
+    (q("seek") as HTMLInputElement).oninput = (e) => this.seek(Number((e.target as HTMLInputElement).value));
+    this.audio.preload = "auto";
+    this.audio.ontimeupdate = () => {
+      if (this.playing) {
+        this.pos = this.audio.currentTime;
+        this.update();
+      }
+    };
+    this.audio.onended = () => {
+      this.playing = false;
+      this.pos = this.audio.currentTime;
+      if (this.which === "processed" && this.item.status === "working") {
+        this.note = "That’s everything written so far. Press Play to carry on from here.";
+      } else {
+        this.pos = 0;
+      }
+      this.update();
+    };
+    this.update();
+  }
+
+  private q(k: string) {
+    return this.el.querySelector<HTMLElement>(`[data-f="${k}"]`)!;
+  }
+
+  private duration() {
+    return this.item.info?.duration ?? 0;
+  }
+
+  /** Seconds of processed audio that can be played. */
+  private available() {
+    const it = this.item;
+    return it.status === "ready" ? this.duration() : it.status === "working" ? it.outputSeconds : 0;
+  }
+
+  private async source(): Promise<string | null> {
+    const it = this.item;
+    if (this.which === "original") {
+      it.originalUrl ??= URL.createObjectURL(it.file);
+      return it.originalUrl;
+    }
+    if (it.status === "ready" && it.url) return it.url;
+    if (it.status === "working") {
+      const blob = await snapshot(it);
+      if (!blob || blob.size < 8192) return null;
+      if (this.snapUrl) URL.revokeObjectURL(this.snapUrl);
+      this.snapUrl = URL.createObjectURL(blob);
+      return this.snapUrl;
+    }
+    return null;
+  }
+
+  async play() {
+    const it = this.item;
+    this.note = "";
+    this.waitingNote = false;
+    if (this.which === "processed" && it.status === "queued") {
+      // Hearing a file that hasn't started moves it to the front.
+      priority = it.id;
+      renderRow(it);
+      this.note = "This file is processed next. Its output starts shortly after it begins.";
+      this.update();
+      return;
+    }
+    const url = await this.source();
+    if (!url) {
+      this.waitingNote = this.which === "processed" && it.status === "working";
+      this.note = this.waitingNote
+        ? "Nothing written yet: output starts once about a minute and a half of the recording has been read."
+        : "This version can’t be played yet.";
+      this.update();
+      return;
+    }
+    if (this.audio.src !== url) {
+      this.audio.src = url;
+      await new Promise<void>((resolve) => {
+        const done = () => resolve();
+        this.audio.addEventListener("loadedmetadata", done, { once: true });
+        this.audio.addEventListener("error", done, { once: true });
+      });
+    }
+    const end = Number.isFinite(this.audio.duration) ? this.audio.duration : this.available();
+    if (this.pos >= end - 0.5) {
+      if (this.which === "processed" && it.status === "working") {
+        this.note = "You’ve reached the end of what’s been written. Try again in a moment.";
+        this.update();
+        return;
+      }
+      this.pos = 0;
+    }
+    this.audio.currentTime = this.pos;
+    try {
+      await this.audio.play();
+      this.playing = true;
+    } catch {
+      this.note = "Playback couldn’t start.";
+    }
+    this.update();
+  }
+
+  pause() {
+    this.audio.pause();
+    this.pos = this.audio.currentTime;
+    this.playing = false;
+    this.update();
+  }
+
+  select(which: "original" | "processed") {
+    if (which === this.which) return;
+    const resume = this.playing;
+    if (this.playing) this.pause();
+    this.which = which;
+    this.audio.removeAttribute("src");
+    this.audio.load();
+    if (resume) void this.play();
+    else this.update();
+  }
+
+  seek(to: number) {
+    if (this.which === "processed") {
+      // Can't go past what's written; stop a little short so there's something to hear.
+      const limit = this.item.status === "working" ? Math.max(0, this.available() - 3) : this.available();
+      this.pos = Math.min(to, limit);
+    } else this.pos = to;
+    const loaded = Number.isFinite(this.audio.duration) ? this.audio.duration : 0;
+    if (this.playing && this.which === "processed" && this.item.status === "working" && this.pos > loaded - 0.5) {
+      // Past the copy that's loaded: take a fresh one that reaches this far.
+      this.audio.pause();
+      this.playing = false;
+      void this.play();
+      return;
+    }
+    if (this.playing) {
+      const max = Number.isFinite(this.audio.duration) ? this.audio.duration - 0.2 : this.pos;
+      this.audio.currentTime = Math.min(this.pos, max);
+    }
+    this.note = "";
+    this.update();
+  }
+
+  /** The processed output was thrown away (new settings). */
+  outputChanged() {
+    if (this.which === "processed") {
+      this.pause();
+      this.audio.removeAttribute("src");
+      this.audio.load();
+      this.pos = 0;
+    }
+  }
+
+  update() {
+    const it = this.item;
+    const dur = this.duration();
+    const play = this.q("play");
+    play.textContent = this.playing ? "❚❚" : "▶";
+    play.setAttribute("aria-label", this.playing ? "Pause" : "Play");
+    this.q("original").setAttribute("aria-pressed", String(this.which === "original"));
+    this.q("processed").setAttribute("aria-pressed", String(this.which === "processed"));
+    const seek = this.q("seek") as HTMLInputElement;
+    seek.max = String(dur);
+    seek.value = String(this.pos);
+    const avail = this.which === "processed" ? Math.min(1, this.available() / Math.max(1, dur)) : 1;
+    seek.style.setProperty("--avail", `${avail * 100}%`);
+    this.q("time").textContent = `${clock(this.pos)} / ${clock(dur)}`;
+    if (this.waitingNote && (this.available() > 0 || it.status !== "working")) {
+      this.note = "";
+      this.waitingNote = false;
+    }
+    let status = this.note;
+    if (!status) {
+      if (this.which === "original") status = "The recording as it is.";
+      else if (it.status === "ready") status = "The finished MP3.";
+      else if (it.status === "working") status = this.available() > 0 ? `The MP3 as it’s being made: ${clock(this.available())} written so far.` : "Output starts once about a minute and a half has been read…";
+      else if (it.status === "queued") status = priority === it.id ? "This file is processed next." : "Waiting to be processed. Press Play to process it next.";
+      else status = "There’s no processed version.";
+    }
+    this.q("status").textContent = status;
+  }
+
+  close() {
+    this.audio.pause();
+    this.audio.removeAttribute("src");
+    this.audio.load();
+    if (this.snapUrl) URL.revokeObjectURL(this.snapUrl);
+    this.el.hidden = true;
+  }
+}
+
+let player: Player | null = null;
+function openPlayer(it: Item) {
+  closePlayer();
+  player = new Player(it);
+  renderRow(it);
+}
+function closePlayer() {
+  if (!player) return;
+  const it = player.item;
+  player.close();
+  player = null;
+  renderRow(it);
+}
+
+// ---------------------------------------------------------------- staying awake / leaving
+
 let wakeLock: { release(): Promise<void> } | null = null;
-
 async function keepAwake(on: boolean) {
   try {
     if (on && !wakeLock && document.visibilityState === "visible" && "wakeLock" in navigator) {
@@ -295,238 +767,18 @@ async function keepAwake(on: boolean) {
   }
 }
 document.addEventListener("visibilitychange", () => {
-  if (!views.proc.hidden) {
+  if (items.some((x) => x.status === "working") && !paused) {
     wakeLock = null; // released automatically when hidden
     keepAwake(true);
   }
 });
-
-async function enoughSpace(): Promise<string | null> {
-  if (!navigator.storage?.estimate) return null;
-  try {
-    const { quota, usage } = await navigator.storage.estimate();
-    if (!quota) return null;
-    const need = usable().reduce((s, x) => s + workingBytes(x.info!.duration, optionsFor(x).channels), 0) * 1.05;
-    const free = quota - (usage ?? 0);
-    if (free < need) return `There isn’t enough free storage on this device. The MP3s need about ${fmtBytes(need)}; about ${fmtBytes(free)} is available.`;
-  } catch {
-    /* unknown: try anyway */
-  }
-  return null;
-}
-
-function releaseOutputs() {
-  for (const it of items) if (it.url) URL.revokeObjectURL(it.url);
-}
-
-$("go").addEventListener("click", async () => {
-  if (!usable().length) return;
-  const problem = await enoughSpace();
-  if (problem) {
-    $("ready-error").textContent = problem;
-    $("ready-error").hidden = false;
-    return;
-  }
-  releaseOutputs();
-  for (const it of items) {
-    it.result = null;
-    it.url = null;
-    it.failed = null;
-  }
-  queue = items.map((_, i) => i).filter((i) => items[i].info && !items[i].error);
-  queuePos = 0;
-  startedAt = performance.now();
-  show("proc");
-  keepAwake(true);
-  startNext();
+window.addEventListener("beforeunload", (e) => {
+  // Finished files live only in this tab until saved.
+  if (items.some((x) => x.status === "working" || x.status === "queued" || x.status === "ready")) e.preventDefault();
 });
 
-/** Total seconds of audio in the queue, and how much is already done. */
-function queueSeconds(upTo = queue.length): number {
-  return queue.slice(0, upTo).reduce((s, i) => s + items[i].info!.duration, 0);
-}
-
-function startNext() {
-  if (queuePos >= queue.length) {
-    keepAwake(false);
-    renderResults();
-    show("done");
-    return;
-  }
-  const i = queue[queuePos];
-  const it = items[i];
-  $("proc-name").textContent = queue.length > 1 ? `File ${queuePos + 1} of ${queue.length} · ${it.file.name}` : it.file.name;
-  $("proc-duration").textContent = fmtDuration(it.info!.duration);
-  setProgress("process", 0);
-  if (queuePos === 0) $("eta").textContent = "Starting…";
-  send({ type: "process", file: it.file, options: optionsFor(it), outputName: `out-${i}.mp3`, fresh: queuePos === 0 });
-}
-
-function fileDone(r: Result, blob: Blob) {
-  const it = items[queue[queuePos]];
-  it.result = r;
-  it.url = URL.createObjectURL(blob);
-  queuePos++;
-  startNext();
-}
-
-function fileFailed(msg: string) {
-  const it = items[queue[queuePos]];
-  if (!it) return;
-  it.failed = msg;
-  // Start a fresh worker in case the old one is in a bad state.
-  worker.terminate();
-  worker = newWorker();
-  queuePos++;
-  startNext();
-}
-
-$("cancel").addEventListener("click", () => {
-  // Terminating is immediate and releases the output file’s lock.
-  worker.terminate();
-  worker = newWorker();
-  keepAwake(false);
-  releaseOutputs();
-  for (const it of items) it.url = null;
-  show("ready");
-});
-
-function setProgress(stage: Stage, fraction: number) {
-  const step = STEP_OF[stage];
-  for (const li of $("steps").querySelectorAll<HTMLLIElement>("li")) {
-    const n = Number(li.dataset.step);
-    li.className = n < step ? "done" : n === step ? "active" : "";
-    li.lastElementChild!.textContent = n < step ? "done" : "";
-  }
-  // Overall progress across the batch, weighted by duration.
-  const total = Math.max(1e-9, queueSeconds());
-  const before = queueSeconds(queuePos);
-  const here = queue[queuePos] !== undefined ? items[queue[queuePos]].info!.duration : 0;
-  const overall = Math.min(1, (before + here * fraction) / total);
-  const pct = Math.floor(overall * 100);
-  $("bar").querySelector("i")!.style.width = `${overall * 100}%`;
-  $("bar").setAttribute("aria-valuenow", String(pct));
-  $("pct").textContent = `${pct}%`;
-  const elapsed = (performance.now() - startedAt) / 1000;
-  if (overall > 0.03 && elapsed > 3) {
-    const left = (elapsed / overall) * (1 - overall);
-    $("eta").textContent = left < 60 ? "Less than a minute left" : `About ${Math.round(left / 60)} minute${Math.round(left / 60) === 1 ? "" : "s"} left`;
-  }
-}
-
-// ---------------------------------------------------------------- results
-
-const SCALE_MIN = -36, SCALE_MAX = -8;
-const pos = (v: number) => `${((Math.min(SCALE_MAX, Math.max(SCALE_MIN, v)) - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)) * 100}%`;
-
-/** Download names, made unique within the batch. */
-function outputNames(): Map<Item, string> {
-  const names = new Map<Item, string>();
-  const used = new Set<string>();
-  for (const it of items) {
-    const base = it.file.name.replace(/\.[^.]+$/, "");
-    let name = /\.mp3$/i.test(it.file.name) ? `${base}-prepared.mp3` : `${base}.mp3`;
-    for (let k = 2; used.has(name.toLowerCase()); k++) name = name.replace(/(-\d+)?\.mp3$/, `-${k}.mp3`);
-    used.add(name.toLowerCase());
-    names.set(it, name);
-  }
-  return names;
-}
-
-function renderResults() {
-  const list = $("results");
-  list.replaceChildren();
-  const tpl = $<HTMLTemplateElement>("result-tpl");
-  const names = outputNames();
-  const shown = items.filter((it) => it.result || it.failed || it.error);
-  let ready = 0, missed = 0, failed = 0;
-  for (const it of shown) {
-    const card = tpl.content.firstElementChild!.cloneNode(true) as HTMLElement;
-    const f = (k: string) => card.querySelector<HTMLElement>(`[data-f="${k}"]`)!;
-    const r = it.result;
-    if (!r) {
-      failed++;
-      f("name").textContent = it.file.name;
-      f("meta").textContent = "Not processed";
-      f("pill").textContent = "Failed";
-      f("pill").classList.add("miss");
-      f("miss").textContent = it.error ?? it.failed ?? "";
-      f("miss").hidden = false;
-      for (const k of ["meter", "stats", "save"]) f(k).hidden = true;
-      list.append(card);
-      continue;
-    }
-    const ok = r.loudnessOk && r.peakOk;
-    if (ok) ready++;
-    else missed++;
-    f("name").textContent = names.get(it)!;
-    f("meta").textContent = `${fmtDuration(r.duration)} · ${r.channels === 1 ? "mono sound" : "stereo"} · ${r.bitrate} kbps · ${fmtBytes(r.bytes)}`;
-    f("pill").textContent = ok ? "Ready to publish" : "Missed target";
-    f("pill").classList.toggle("miss", !ok);
-    const misses: string[] = [];
-    if (!r.loudnessOk) misses.push(`its loudness is ${fmtDb(r.outputLufs)} LUFS instead of ${fmtDb(r.targetLufs, 0)}`);
-    if (!r.peakOk) misses.push(`its true peak is ${fmtDb(r.outputTruePeak)} dBTP, above the ${fmtDb(MAX_TRUE_PEAK + r.targetLufs - TARGET_LUFS, 0)} dBTP limit`);
-    f("miss").textContent = ok ? "" : `The finished MP3 missed the target: ${misses.join(", and ")}. This is a bug in the app; the file is still saved as processed.`;
-    f("miss").hidden = ok;
-    f("target").style.left = pos(r.targetLufs - 1);
-    f("target").style.width = `${(2 / (SCALE_MAX - SCALE_MIN)) * 100}%`;
-    f("before").style.left = pos(r.inputLufs);
-    f("after").style.left = pos(r.outputLufs);
-    f("ticks").innerHTML = [-34, -28, -22, -16, -10].map((t) => `<span style="left:${pos(t)}">${minus(String(t))}</span>`).join("");
-    f("lufs-before").textContent = `${fmtDb(r.inputLufs)} LUFS`;
-    f("lufs-after").textContent = `${fmtDb(r.outputLufs)} LUFS`;
-    f("lufs").textContent = fmtDb(r.outputLufs);
-    f("tp").textContent = fmtDb(r.outputTruePeak);
-    if (r.noiseReductionDb !== null) {
-      f("s3").textContent = `${fmtDb(r.noiseReductionDb, 0)} dB`;
-      f("s3-label").textContent = "background noise";
-    } else {
-      f("s3").textContent = String(r.spikesTamed);
-      f("s3-label").textContent = r.spikesTamed === 1 ? "loud noise tamed" : "loud noises tamed";
-    }
-    const save = f("save") as HTMLAnchorElement;
-    save.href = it.url!;
-    save.download = names.get(it)!;
-    save.textContent = shown.length > 1 ? `Save ${names.get(it)}` : "Save MP3";
-    list.append(card);
-  }
-  const done = ready + missed;
-  $("done-title").textContent =
-    shown.length === 1 ? (done ? "Your MP3 is ready" : "This file couldn’t be processed") : `${plural(done, "MP3", "MP3s")} ready`;
-  const parts: string[] = [];
-  if (missed) parts.push(`${missed} missed the loudness target`);
-  if (failed) parts.push(`${plural(failed, "file", "files")} couldn’t be processed`);
-  $("done-sub").textContent = parts.length ? `${parts.join("; ")}.` : shown.length > 1 ? "Save each one below." : "";
-  $("done-sub").hidden = !$("done-sub").textContent;
-}
-
-$("again").addEventListener("click", () => {
-  releaseOutputs();
-  items = [];
-  show("empty");
-});
-
-function onWorkerMessage(m: Response) {
-  switch (m.type) {
-    case "info":
-      onProbe(m.id, m.info, null);
-      break;
-    case "probeError":
-      onProbe(m.id, null, m.message);
-      break;
-    case "progress":
-      if (!views.proc.hidden) setProgress(m.progress.stage, m.progress.fraction);
-      break;
-    case "done":
-      fileDone(m.result, m.output);
-      break;
-    case "error":
-      if (!views.proc.hidden) fileFailed(m.userFacing ? m.message : `Something went wrong while processing: ${m.message}`);
-      break;
-  }
-}
-
-// ---------------------------------------------------------------- offline
+renderAll();
+renderPending();
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register("sw.js").catch((e) => console.warn("Service worker not registered", e));

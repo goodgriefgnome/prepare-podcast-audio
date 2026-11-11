@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Prepare Podcast Audio</title>
-    <meta name="description" content="Clean up a podcast recording and set it to the right loudness for podcast apps. Runs entirely on your device." />
+    <meta name="description" content="Clean up podcast recordings and set them to the right loudness for podcast apps. Runs entirely on your device." />
     <meta name="theme-color" content="#f3f5f4" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0f1513" media="(prefers-color-scheme: dark)" />
     <link rel="manifest" href="manifest.webmanifest" />
@@ -13,161 +13,107 @@
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
-    <main class="wrap">
+    <main class="page">
       <header>
         <h1>Prepare Podcast Audio</h1>
-        <p>Clean up a recording and make it the right loudness for podcast apps. Everything happens on your device; nothing is uploaded.</p>
+        <p>Clean up recordings and make them the right loudness for podcast apps. Everything happens on your device; nothing is uploaded.</p>
       </header>
 
-      <!-- Choose a file -->
-      <section class="card" id="view-empty">
-        <label class="drop" id="drop" for="file">
-          <span class="big">Drop WAV or MP3 files here</span>
-          <span class="small">or</span>
-          <span class="secondary as-button">Choose files…</span>
-          <input type="file" id="file" multiple accept=".wav,.mp3,audio/wav,audio/x-wav,audio/wave,audio/mpeg" />
-        </label>
-        <p class="error" id="empty-error" role="alert" hidden></p>
-      </section>
-
-      <!-- Settings -->
-      <section class="card" id="view-ready" hidden>
-        <div class="pager" id="pager" hidden>
-          <button class="secondary pager-btn" id="prev" type="button" aria-label="Previous file">‹ Previous</button>
-          <span class="num hint" id="pager-pos"></span>
-          <button class="secondary pager-btn" id="next" type="button" aria-label="Next file">Next ›</button>
-        </div>
-        <div class="file">
-          <div class="name" id="ready-name"></div>
-          <button class="link" id="change" type="button">Change files</button>
-          <div class="meta num" id="ready-meta"></div>
-        </div>
-        <p class="error" id="file-error" role="alert" hidden></p>
-
-        <div class="group preview" id="preview">
-          <div class="row">
-            <span class="label">Preview · first 3 minutes</span>
-            <span class="num hint" id="pv-time">0:00 / 3:00</span>
-          </div>
-          <div class="pv-controls">
-            <button class="secondary pv-play" id="pv-play" type="button" aria-pressed="false">Play</button>
-            <div class="seg" role="group" aria-label="Version to hear">
-              <button id="pv-original" type="button" aria-pressed="true">Original</button>
-              <button id="pv-processed" type="button" aria-pressed="false">Processed</button>
+      <div class="layout">
+        <aside class="panel settings" id="settings-panel" aria-labelledby="set-h">
+          <div class="panel-head"><h2 id="set-h">Settings</h2><span class="hint" id="set-hint">Apply to every file</span></div>
+          <div class="settings-body">
+            <div class="group">
+              <div class="row">
+                <span class="label" id="ch-label">Output</span>
+                <div class="seg" role="group" aria-labelledby="ch-label">
+                  <button id="ch-mono" type="button" aria-pressed="true">Mono</button>
+                  <button id="ch-stereo" type="button" aria-pressed="false">Stereo</button>
+                </div>
+              </div>
+              <span class="hint" id="ch-hint"></span>
+            </div>
+            <div class="group">
+              <div class="row"><label class="label" for="level">Output level</label><span class="num hint" id="level-val"></span></div>
+              <input class="level" type="range" id="level" min="-12" max="0" step="3" value="0" list="level-steps" />
+              <datalist id="level-steps"><option value="-12"></option><option value="-9"></option><option value="-6"></option><option value="-3"></option><option value="0"></option></datalist>
+              <span class="hint" id="level-hint"></span>
+            </div>
+            <div class="group">
+              <span class="label">Clean up</span>
+              <div class="toggles">
+                <label class="toggle"><span>Remove rumble</span><input type="checkbox" id="t-rumble" checked /><small>Hum, traffic and desk bumps</small></label>
+                <label class="toggle"><span>Reduce background noise</span><input type="checkbox" id="t-noise" checked /><small>Hiss, fans and room tone</small></label>
+                <label class="toggle"><span>Tame sudden loud noises</span><input type="checkbox" id="t-spikes" checked /><small>Coughs, bangs and mic pops</small></label>
+                <label class="toggle"><span>Soften harsh “s” sounds</span><input type="checkbox" id="t-ess" checked /><small>Sibilance that gets sharp when loudness is raised</small></label>
+                <label class="toggle"><span>Even out speakers</span><input type="checkbox" id="t-level" checked /><small>Quiet and loud voices brought together</small></label>
+              </div>
+            </div>
+            <div class="spec">
+              <span class="num" id="spec-1"></span>
+              <span class="num" id="spec-2"></span>
+              <span id="spec-3"></span>
             </div>
           </div>
-          <input type="range" id="pv-seek" min="0" max="180" step="0.1" value="0" aria-label="Preview position" />
-          <p class="hint pv-status" id="pv-status" role="status" hidden></p>
-        </div>
-
-        <div class="group">
-          <div class="row">
-            <span class="label" id="ch-label">Output channels</span>
-            <div class="seg" role="group" aria-labelledby="ch-label">
-              <button id="ch-mono" type="button" aria-pressed="true">Mono</button>
-              <button id="ch-stereo" type="button" aria-pressed="false">Stereo</button>
+          <div class="go-wrap">
+            <div class="pending" id="pending" hidden>
+              <p class="pending-text">Settings changed. Files keep the previous settings until you apply.</p>
+              <button class="primary" id="apply" type="button">Apply and reprocess</button>
+              <button class="secondary" id="undo" type="button">Undo changes</button>
             </div>
-          </div>
-          <div class="hint" id="ch-hint"></div>
-        </div>
-
-        <div class="group">
-          <div class="row">
-            <label class="label" for="trim">Output level</label>
-            <span class="num hint" id="trim-value"></span>
-          </div>
-          <input type="range" id="trim" min="-12" max="0" step="3" value="0" list="trim-steps" />
-          <datalist id="trim-steps"><option value="-12"></option><option value="-9"></option><option value="-6"></option><option value="-3"></option><option value="0"></option></datalist>
-          <div class="hint" id="trim-hint"></div>
-        </div>
-
-        <div class="group">
-          <span class="label">Clean up</span>
-          <div class="checks">
-            <label class="check"><input type="checkbox" id="c-rumble" checked /><b>Remove rumble</b><span>Cuts low-frequency hum, traffic and desk bumps below the voice.</span></label>
-            <label class="check"><input type="checkbox" id="c-noise" checked /><b>Reduce background noise</b><span>Lowers steady hiss, fans and room tone between words.</span></label>
-            <label class="check"><input type="checkbox" id="c-spikes" checked /><b>Tame sudden loud noises</b><span>Pulls coughs, bumps, door slams and mic pops down to the level of the voice.</span></label>
-            <label class="check"><input type="checkbox" id="c-sibilance" checked /><b>Soften harsh “s” sounds</b><span>Tames sibilance that gets sharp after loudness is raised.</span></label>
-            <label class="check"><input type="checkbox" id="c-level" checked /><b>Even out speakers</b><span>Brings quiet and loud voices closer together so listeners don’t reach for the volume.</span></label>
-          </div>
-        </div>
-
-        <div class="spec">
-          <span class="label">Output</span>
-          <span class="num" id="spec-line"></span>
-          <span class="num" id="spec-loud"></span>
-          <span><span id="spec-note"></span> About <span class="num" id="spec-size"></span><span id="spec-total"></span>.</span>
-        </div>
-
-        <p class="error" id="ready-error" role="alert" hidden></p>
-        <button class="primary" id="go" type="button">Prepare audio</button>
-        <p class="note" id="batch-note" hidden>These settings apply to every file.</p>
-      </section>
-
-      <!-- Processing -->
-      <section class="card" id="view-proc" hidden>
-        <div class="file">
-          <div class="name" id="proc-name"></div>
-          <span class="num hint" id="proc-duration"></span>
-        </div>
-        <ol class="steps" id="steps">
-          <li data-step="0"><span class="dot"></span><span>Clean up, balance and encode</span><span class="num hint"></span></li>
-          <li data-step="1"><span class="dot"></span><span>Check the finished MP3</span><span class="num hint"></span></li>
-        </ol>
-        <div class="bar" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" id="bar"><i></i></div>
-        <div class="row hint"><span id="eta">Starting…</span><span class="num" id="pct">0%</span></div>
-        <button class="secondary" id="cancel" type="button">Cancel</button>
-        <p class="note">Keep this tab open until it finishes.</p>
-      </section>
-
-      <!-- Done -->
-      <section class="results" id="view-done" hidden>
-        <div class="card">
-          <div class="row">
-            <div class="file grow">
-              <div class="name" id="done-title"></div>
-              <div class="meta" id="done-sub"></div>
+            <div class="overall" id="overall">
+              <div class="row hint"><span id="overall-text"></span><span class="num" id="overall-pct"></span></div>
+              <div class="bar" id="overall-bar-wrap" role="progressbar" aria-label="Overall progress" aria-valuemin="0" aria-valuemax="100"><i id="overall-bar"></i></div>
             </div>
-            <button class="secondary" id="again" type="button">Prepare more</button>
+            <button class="secondary" id="pause" type="button" hidden>Pause</button>
           </div>
-        </div>
-        <div class="results" id="results"></div>
-      </section>
+        </aside>
 
-      <template id="result-tpl">
-        <section class="card result">
-          <div class="row">
-            <div class="file grow">
-              <div class="name" data-f="name"></div>
-              <div class="meta num" data-f="meta"></div>
-            </div>
-            <span class="pill" data-f="pill"></span>
+        <section class="panel" aria-labelledby="files-h">
+          <div class="panel-head">
+            <h2 id="files-h">Files</h2>
+            <span class="hint num" id="files-summary"></span>
           </div>
-          <p class="error" data-f="miss" role="alert" hidden></p>
-          <div class="meter" data-f="meter">
-            <span class="label">Loudness</span>
-            <div class="scale" aria-hidden="true">
-              <div class="target" data-f="target"></div>
-              <div class="mark before" data-f="before"></div>
-              <div class="mark after" data-f="after"></div>
-            </div>
-            <div class="ticks num" aria-hidden="true" data-f="ticks"></div>
-            <div class="legend">
-              <span><i class="swatch before"></i>Original <span class="num" data-f="lufs-before"></span></span>
-              <span><i class="swatch after"></i>Prepared <span class="num" data-f="lufs-after"></span></span>
-              <span><i class="swatch target"></i>Target range</span>
-            </div>
-          </div>
-          <div class="stats" data-f="stats">
-            <div class="stat"><span class="v num" data-f="lufs"></span><span class="k">LUFS integrated</span></div>
-            <div class="stat"><span class="v num" data-f="tp"></span><span class="k">dBTP true peak</span></div>
-            <div class="stat"><span class="v num" data-f="s3"></span><span class="k" data-f="s3-label"></span></div>
-          </div>
-          <a class="primary as-button" data-f="save" download>Save MP3</a>
+          <ul class="files" id="files"></ul>
+          <label class="add" id="add" for="file-input">
+            <input type="file" id="file-input" multiple accept=".wav,.mp3,audio/wav,audio/x-wav,audio/wave,audio/mpeg" />
+            <span id="add-text">Drop WAV or MP3 files here, or <b>browse</b>. They start processing straight away.</span>
+          </label>
         </section>
-      </template>
+      </div>
 
-      <p class="foot">Made for spoken-word podcasts. Output is MP3 at 44.1 kHz.</p>
+      <p class="foot">Made for spoken-word podcasts. Keep this tab open while files are processing.</p>
     </main>
+
+    <template id="row-tpl">
+      <li class="file">
+        <div class="file-main">
+          <span class="chip" data-f="chip"></span>
+          <span class="file-name" data-f="name"></span>
+          <div class="file-actions">
+            <button class="btn" type="button" data-f="listen">Listen</button>
+            <a class="btn save" data-f="save" download>Save MP3</a>
+            <button class="icon-btn" type="button" data-f="remove">×</button>
+          </div>
+          <span class="file-meta num" data-f="meta"></span>
+          <span class="file-result" data-f="result"></span>
+        </div>
+        <div class="rowbar" data-f="bar"><i></i></div>
+        <div class="player" data-f="player" hidden>
+          <div class="player-top">
+            <div class="player-controls">
+              <button class="play" type="button" data-f="play" aria-label="Play">▶</button>
+              <div class="seg" role="group" aria-label="Version to hear">
+                <button type="button" data-f="original" aria-pressed="true">Original</button>
+                <button type="button" data-f="processed" aria-pressed="false">Processed</button>
+              </div>
+            </div>
+            <span class="num hint" data-f="time"></span>
+          </div>
+          <input class="seek" type="range" min="0" step="0.1" value="0" data-f="seek" aria-label="Playback position" />
+          <span class="hint" data-f="status" role="status"></span>
+        </div>
+      </li>
+    </template>
   </body>
 </html>

@@ -1,53 +1,53 @@
-// Drives the built app in Chromium: node test/e2e.cjs <input[,input2,...]> <outputDir-or-file.mp3> [stereo] [screenshotDir]
+// Drives the built app (npx vite preview --port 4173) in Chromium.
+//
+//   node test/e2e.cjs <input[,input2,...]> <outputDir> [stereo] [screenshotDir]
+//
+// Adds the files, waits for every row to finish, and saves each MP3.
 const { chromium } = require("playwright");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const [inputArg, output, mode, shots] = process.argv.slice(2);
+
+const [inputArg, outDir, mode, shots] = process.argv.slice(2);
 const inputs = inputArg.split(",");
+
 (async () => {
   // A persistent profile gets a normal storage quota (ephemeral contexts are capped).
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "ppa-profile-"));
-  const browser = await chromium.launchPersistentContext(profile, { viewport: { width: 900, height: 1100 }, acceptDownloads: true });
+  const browser = await chromium.launchPersistentContext(profile, {
+    viewport: { width: 1200, height: 1000 },
+    acceptDownloads: true,
+    args: ["--autoplay-policy=no-user-gesture-required"],
+  });
   const page = browser.pages()[0] ?? (await browser.newPage());
-  page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") console.log("[page]", m.text()); });
+  page.on("console", (m) => { if (m.type() === "error") console.log("[page]", m.text()); });
   page.on("pageerror", (e) => console.log("[pageerror]", e.message));
   await page.goto("http://localhost:4173/");
-  console.log("storage quota GB:", await page.evaluate(async () => ((await navigator.storage.estimate()).quota / 1e9).toFixed(1)));
-  if (shots) await page.screenshot({ path: `${shots}/1-empty.png` });
-  await page.setInputFiles("#file", inputs);
-  await page.waitForSelector("#view-ready:not([hidden])");
-  console.log("meta:", await page.textContent("#ready-meta"), "| stereo disabled:", await page.isDisabled("#ch-stereo"));
   if (mode === "stereo") await page.click("#ch-stereo");
-  if (shots) await page.screenshot({ path: `${shots}/2-ready.png`, fullPage: true });
   const t0 = Date.now();
-  await page.click("#go");
-  await page.waitForSelector("#view-proc:not([hidden])");
-  let shot = false;
-  const timer = setInterval(async () => {
-    try {
-      const pct = await page.textContent("#pct");
-      console.log(`${((Date.now() - t0) / 1000).toFixed(0)}s ${pct} ${await page.textContent("#eta")}`);
-      if (shots && !shot && parseInt(pct) > 40) { shot = true; await page.screenshot({ path: `${shots}/3-proc.png` }); }
-    } catch {}
-  }, 5000);
-  await page.waitForSelector("#view-done:not([hidden]), #ready-error:not([hidden]), #empty-error:not([hidden])", { timeout: 4 * 3600 * 1000 });
-  clearInterval(timer);
-  if (!(await page.isVisible("#view-done"))) {
-    console.log("FAILED:", await page.textContent("#ready-error"), await page.textContent("#empty-error"));
-    process.exit(1);
+  await page.setInputFiles("#file-input", inputs);
+  const chips = () => page.$$eval("#files .chip", (els) => els.map((e) => e.textContent));
+  let last = "";
+  for (;;) {
+    const c = await chips();
+    const line = c.join(" | ");
+    if (line !== last && Date.now() - t0 > 0) {
+      console.log(`${((Date.now() - t0) / 1000).toFixed(0)}s ${line} · ${await page.textContent("#overall-text")}`);
+      last = line;
+    }
+    if (c.length === inputs.length && c.every((x) => /Ready|Missed|Can’t read|Failed/.test(x))) break;
+    await page.waitForTimeout(1000);
   }
-  console.log("done in", ((Date.now() - t0) / 1000).toFixed(1), "s:", await page.textContent("#done-title"), "|", await page.textContent("#done-sub"));
-  if (shots) await page.screenshot({ path: `${shots}/4-done.png`, fullPage: true });
-  const cards = await page.$$("#results .result");
-  for (const card of cards) {
-    const t = async (k) => (await card.$eval(`[data-f="${k}"]`, (el) => (el.hidden ? "" : el.textContent))).trim();
-    console.log(" -", await t("name"), "|", await t("pill"), "|", await t("meta"), "|", await t("lufs"), "LUFS", await t("tp"), "dBTP", (await t("miss")) || "");
-    const save = await card.$('[data-f="save"]:not([hidden])');
+  console.log("done in", ((Date.now() - t0) / 1000).toFixed(1), "s ·", await page.textContent("#overall-text"));
+  if (shots) await page.screenshot({ path: `${shots}/done.png`, fullPage: true });
+  fs.mkdirSync(outDir, { recursive: true });
+  for (const row of await page.$$("#files .file")) {
+    const t = async (k) => ((await row.$eval(`[data-f="${k}"]`, (el) => el.textContent)) || "").trim();
+    console.log(" -", await t("name"), "|", await t("chip"), "|", await t("result"));
+    const save = await row.$('[data-f="save"]:not([hidden])');
     if (!save) continue;
     const [dl] = await Promise.all([page.waitForEvent("download"), save.click()]);
-    const dest = output.endsWith(".mp3") && cards.length === 1 ? output : path.join(output, dl.suggestedFilename());
-    if (!output.endsWith(".mp3")) fs.mkdirSync(output, { recursive: true });
+    const dest = path.join(outDir, dl.suggestedFilename());
     await dl.saveAs(dest);
     console.log("   saved", dest);
   }

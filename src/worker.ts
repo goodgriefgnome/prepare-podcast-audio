@@ -1,55 +1,56 @@
 /// <reference lib="webworker" />
 import { openAudio } from "./io/mp3.ts";
-import { UnsupportedFileError, type AudioInfo, type Planar } from "./io/source.ts";
-import { OpfsStorage, type Storage } from "./io/store.ts";
+import { UnsupportedFileError, type AudioInfo } from "./io/source.ts";
+import { OpfsStorage, type ByteStore, type Storage } from "./io/store.ts";
 import { rnnoiseFactory } from "./pipeline/denoise.ts";
-import { OUT_RATE, processAudio, type Options, type Progress, type Result } from "./pipeline/process.ts";
+import { processAudio, type Options, type Progress, type Result } from "./pipeline/process.ts";
 
 export type Request =
   | { type: "probe"; id: number; file: File }
   /**
    * Processes one file into `outputName` in the app's private storage.
-   * `fresh` clears outputs from earlier batches first.
+   * `fresh` clears outputs left from earlier visits first.
    */
-  | { type: "process"; file: File; options: Options; outputName: string; fresh: boolean }
-  /** Streams the first `seconds` of the file as it is (original preview). */
-  | { type: "previewOriginal"; file: File; seconds: number }
-  /** Streams the first `seconds` of the file processed with `options`. */
-  | { type: "previewProcessed"; file: File; options: Options; seconds: number };
+  | { type: "process"; id: number; file: File; options: Options; outputName: string; previous: string | null; fresh: boolean }
+  | { type: "pause" }
+  | { type: "resume" }
+  /** Asks for a copy of the MP3 written so far by the file being processed. */
+  | { type: "snapshot"; id: number };
 
 export type Response =
   | { type: "info"; id: number; info: AudioInfo }
   | { type: "probeError"; id: number; message: string }
-  | { type: "progress"; progress: Progress }
-  | { type: "done"; result: Result; output: Blob }
-  | { type: "error"; message: string; userFacing: boolean }
-  /** A chunk of preview audio. */
-  | { type: "pcm"; sampleRate: number; channels: Float32Array[] }
-  /** The preview stream has ended. */
-  | { type: "pcmEnd" };
+  | { type: "progress"; id: number; progress: Progress }
+  | { type: "done"; id: number; result: Result; output: Blob }
+  | { type: "error"; id: number; message: string }
+  /** `blob` is null when that file isn't being processed any more. */
+  | { type: "snapshot"; id: number; blob: Blob | null };
 
 declare const self: DedicatedWorkerGlobalScope;
+const post = (r: Response) => self.postMessage(r);
 
-const post = (r: Response, transfer: Transferable[] = []) => self.postMessage(r, transfer);
+let current: { id: number; out: ByteStore | null } | null = null;
+let paused: { promise: Promise<void>; resume: () => void } | null = null;
 
-function postPcm(sampleRate: number, p: Planar) {
-  const channels = p.map((c) => c.slice());
-  post({ type: "pcm", sampleRate, channels }, channels.map((c) => c.buffer));
+/** Storage that remembers the MP3 being written so it can be copied on request. */
+function tracking(storage: Storage, onBytes: (b: ByteStore) => void): Storage {
+  return {
+    samples: (n, c) => storage.samples(n, c),
+    bytes: async (n) => {
+      const b = await storage.bytes(n);
+      onBytes(b);
+      return b;
+    },
+    close: (n) => storage.close(n),
+    blob: (n) => storage.blob(n),
+    remove: (n) => storage.remove(n),
+  };
 }
-
-/** Previews never write files, but the pipeline wants a Storage. */
-const noStorage: Storage = {
-  samples: () => Promise.reject(new Error("unused")),
-  bytes: () => Promise.reject(new Error("unused")),
-  close: async () => {},
-  blob: () => Promise.reject(new Error("unused")),
-  remove: async () => {},
-};
 
 self.onmessage = async (e: MessageEvent<Request>) => {
   const msg = e.data;
-  try {
-    if (msg.type === "probe") {
+  switch (msg.type) {
+    case "probe":
       try {
         const src = await openAudio(msg.file, msg.file.name);
         post({ type: "info", id: msg.id, info: src.info });
@@ -58,51 +59,60 @@ self.onmessage = async (e: MessageEvent<Request>) => {
         post({ type: "probeError", id: msg.id, message });
       }
       return;
-    }
-    if (msg.type === "previewOriginal") {
-      const src = await openAudio(msg.file, msg.file.name);
-      const max = Math.round(msg.seconds * src.info.sampleRate);
-      let sent = 0;
-      for await (const chunk of src.chunks()) {
-        const n = Math.min(chunk[0].length, max - sent);
-        postPcm(src.info.sampleRate, chunk.map((c) => c.subarray(0, n)));
-        sent += n;
-        if (sent >= max) break;
+    case "pause":
+      if (!paused) {
+        let resume = () => {};
+        const promise = new Promise<void>((r) => (resume = r));
+        paused = { promise, resume };
       }
-      post({ type: "pcmEnd" });
+      return;
+    case "resume":
+      paused?.resume();
+      paused = null;
+      return;
+    case "snapshot": {
+      const out = current && current.id === msg.id ? current.out : null;
+      const bytes = out?.snapshot();
+      post({ type: "snapshot", id: msg.id, blob: bytes ? new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "audio/mpeg" }) : null });
       return;
     }
-    if (msg.type === "previewProcessed") {
-      const src = await openAudio(msg.file, msg.file.name);
-      await processAudio(src, { ...msg.options, maxSeconds: msg.seconds }, {
-        storage: noStorage,
-        denoiser: rnnoiseFactory,
-        onProgress: (progress) => post({ type: "progress", progress }),
-        checkCancel: () => {},
-        sink: (p) => postPcm(OUT_RATE, p),
-      });
-      post({ type: "pcmEnd" });
+    case "process":
+      await processOne(msg);
       return;
-    }
+  }
+};
+
+async function processOne(msg: Extract<Request, { type: "process" }>) {
+  const job = { id: msg.id, out: null as ByteStore | null };
+  current = job;
+  try {
     const src = await openAudio(msg.file, msg.file.name);
-    const storage = await OpfsStorage.open("work", msg.fresh);
+    const opfs = await OpfsStorage.open("work", msg.fresh);
+    // Tidy up this file's previous run (it may still be locked; that's fine).
+    if (msg.previous) await opfs.remove(msg.previous).catch(() => {});
+    const storage = tracking(opfs, (b) => (job.out = b));
     const result = await processAudio(src, msg.options, {
       storage,
       outputName: msg.outputName,
       denoiser: rnnoiseFactory,
-      onProgress: (progress) => post({ type: "progress", progress }),
+      onProgress: (progress) => post({ type: "progress", id: msg.id, progress }),
       checkCancel: () => {},
+      gate: () => paused?.promise ?? Promise.resolve(),
     });
-    post({ type: "done", result, output: await storage.blob(result.outputName) });
+    current = null;
+    post({ type: "done", id: msg.id, result, output: await storage.blob(result.outputName) });
   } catch (err) {
+    current = null;
     console.error(err);
     const name = err instanceof DOMException ? err.name : "";
-    if (name === "QuotaExceededError") {
-      post({ type: "error", userFacing: true, message: "Your device ran out of storage space while processing. Free up some space and try again." });
-    } else if (name === "NoModificationAllowedError") {
-      post({ type: "error", userFacing: true, message: "This app is already processing a file in another tab or window. Close it, or wait for it to finish, then try again." });
-    } else {
-      post({ type: "error", userFacing: err instanceof UnsupportedFileError, message: err instanceof Error ? err.message : String(err) });
-    }
+    const message =
+      name === "QuotaExceededError"
+        ? "Your device ran out of storage space. Free up some space, then remove and add this file again."
+        : name === "NoModificationAllowedError"
+          ? "This app is already processing files in another tab or window. Close it, then add this file again."
+          : err instanceof UnsupportedFileError
+            ? err.message
+            : `Something went wrong while processing: ${err instanceof Error ? err.message : String(err)}`;
+    post({ type: "error", id: msg.id, message });
   }
-};
+}

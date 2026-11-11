@@ -25,13 +25,14 @@ Each step can be turned off in the UI except the loudness and peak stages.
 
 Because gains are planned with about a minute of look-ahead, the level stages can look ahead and behind instead of reacting the way a real-time plugin does.
 
-## Several files
+## Using it
 
-Several files can be chosen or dropped at once. One set of settings applies to all of them; mono recordings always get mono sound. Previous/Next on the settings screen step through the files, and the preview follows. Files are processed one after another, and the results list shows each file's loudness and peak with its own Save button. Files that can't be read are skipped and listed as failed.
+Everything is on one page. Settings are on the left (at the top on phones), and the files are on the right.
 
-## Preview
-
-The settings screen previews the first 3 minutes with one player and an Original/Processed switch that keeps the playback position. The original plays straight away. The processed version streams from the same pipeline (without MP3 encoding) in a separate worker, starting the first time Play or Processed is pressed. It begins once about 85 s of input has been read, because of the look-ahead, and it restarts whenever a setting changes.
+- **Adding files:** drop or browse for WAV and MP3 files. Each one starts processing as soon as it's added, one at a time in list order, using the current settings. Mono recordings always get mono sound. Files that can't be read are marked and skipped.
+- **Listening:** each file has a Listen button that opens a player with Original and Processed. While a file is processing, Processed plays a copy of the MP3 written so far; every press of Play takes a fresh copy, so the length grows. The seek bar shades how much has been written. Asking to hear a file that hasn't started moves it to the front of the queue.
+- **Changing settings:** with no files yet, changes apply straight away. Once files have been added, a change waits for **Apply and reprocess** (or **Undo changes**); until then every file keeps the previous settings.
+- **Saving:** finished files show their loudness, peak and noise figures and a Save MP3 button. Processing can be paused and resumed.
 
 ## Long recordings
 
@@ -39,6 +40,8 @@ The whole job is a single streaming pass over the input, plus a check of the fin
 
 1. **Process:** decode → mix to output channels → resample to 48 kHz → high-pass → noise reduction. The cleaned audio then waits in a delay line of about 85 s while level features are collected every 5 ms. Gains for each 20 s stretch are worked out from the features of the ±65 s around it. The audio then has the gains applied and is resampled to 44.1 kHz, limited, set to the output level and encoded.
 2. **Verify:** decode the MP3, measure loudness and true peak, and report a miss.
+
+Because the MP3 is written as processing goes, it can be played before the file is finished. The worker hands the page a copy of the bytes written so far, and an ordinary `<audio>` element plays it.
 
 Instead of whole-recording statistics, the level stages use a sliding window of about a minute (±30 s). This assumes a recording doesn't have minute-long stretches at very different levels:
 
@@ -65,14 +68,14 @@ node --experimental-transform-types test/run.ts input.wav output.mp3 [mono|stere
 Drive the built app end to end in Chromium (after `npx vite preview --port 4173`):
 
 ```bash
-node test/e2e.cjs input.wav[,more.mp3,...] output.mp3-or-dir [stereo] [screenshotDir]
+node test/e2e.cjs input.wav[,more.mp3,...] outputDir [stereo] [screenshotDir]
 ```
 
 `dist/` is a static site and can be served from any HTTPS host. OPFS and service workers need a secure context.
 
 ## Code map
 
-- `src/main.ts`, `index.html`, `src/style.css` — UI
+- `src/main.ts`, `index.html`, `src/style.css` — the page: file list, queue, settings and player
 - `src/worker.ts` — runs the pipeline in a dedicated worker
 - `src/pipeline/process.ts` — the passes described above
 - `src/pipeline/dynamics.ts` — gain-curve computation (spikes, leveler, compressor, de-esser)

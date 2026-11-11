@@ -33,8 +33,6 @@ export interface Options {
    * very last step, so it lowers loudness and peaks together.
    */
   outputTrimDb: number;
-  /** Process only the first this-many seconds (for previews). */
-  maxSeconds?: number;
 }
 
 /**
@@ -48,6 +46,8 @@ export interface Progress {
   stage: Stage;
   /** 0–1 overall. */
   fraction: number;
+  /** Seconds of finished MP3 written so far (it can be played while processing goes on). */
+  outputSeconds: number;
 }
 
 export interface Result {
@@ -77,12 +77,8 @@ export interface Deps {
   checkCancel(): void;
   /** Name for the output file in storage (default out.mp3). */
   outputName?: string;
-  /**
-   * For previews: receives the finished 44.1 kHz audio as it's produced,
-   * instead of it being encoded to MP3. Nothing is written and there is no
-   * verify step.
-   */
-  sink?: (p: Planar) => void;
+  /** Awaited between chunks; resolves when processing may continue (used for pausing). */
+  gate?: () => Promise<void>;
 }
 
 const WEIGHTS: Record<Stage, number> = { process: 92, verify: 8 };
@@ -118,11 +114,14 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
     if (now - lastReport < 100 && f < 1) return;
     lastReport = now;
     const base = stage === "verify" ? WEIGHTS.process : 0;
-    deps.onProgress({ stage, fraction: (base + WEIGHTS[stage] * Math.min(1, Math.max(0, f))) / 100 });
+    deps.onProgress({
+      stage,
+      fraction: (base + WEIGHTS[stage] * Math.min(1, Math.max(0, f))) / 100,
+      outputSeconds: (out.size * 8) / (bitrate * 1000),
+    });
   };
 
-  const maxIn = opts.maxSeconds ? Math.round(opts.maxSeconds * source.info.sampleRate) : Infinity;
-  const expected = Math.max(1, Math.min(maxIn, source.info.duration * source.info.sampleRate));
+  const expected = Math.max(1, source.info.duration * source.info.sampleRate);
 
   // ---- Front end: decode → mix → 48 kHz → high-pass → noise reduction.
   const toWork = new Resampler(source.info.sampleRate, WORK_RATE, C);
@@ -172,17 +171,15 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
   const lim = new TruePeakLimiter(OUT_RATE, C, ceilingDb);
   const trim = Math.pow(10, trimDb / 20);
   const preEncodeMeter = new LoudnessMeter(OUT_RATE, C);
-  const sink = deps.sink;
-  const encoder = sink ? null : await createMp3Encoder();
-  encoder?.configure({ channels: 2, sampleRate: OUT_RATE, bitrate: bitrate as 128 | 192 });
-  const out = sink ? null : await storage.bytes(outName);
+  const encoder = await createMp3Encoder();
+  encoder.configure({ channels: 2, sampleRate: OUT_RATE, bitrate: bitrate as 128 | 192 });
+  const out = await storage.bytes(outName);
   let applied = 0; // samples taken out of the delay line
   const encode = (p: Planar) => {
     if (!p[0].length) return;
     if (trim !== 1) for (const ch of p) for (let i = 0; i < ch.length; i++) ch[i] *= trim;
     preEncodeMeter.push(p);
-    if (sink) sink(p);
-    else out!.append(encoder!.encode(C === 1 ? [p[0], p[0]] : p).slice());
+    out.append(encoder.encode(C === 1 ? [p[0], p[0]] : p).slice());
   };
   const apply = (final: boolean) => {
     // A sample needs the gains of the hops on both sides of it.
@@ -229,16 +226,15 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
 
   let decoded = 0;
   try {
-    for await (let chunk of source.chunks()) {
+    for await (const chunk of source.chunks()) {
       checkCancel();
-      if (decoded + chunk[0].length > maxIn) chunk = chunk.map((ch) => ch.subarray(0, maxIn - decoded));
       decoded += chunk[0].length;
       afterResample(toWork.push(mix(chunk, C)));
       planUpTo(false);
       apply(false);
       report("process", decoded / expected);
       await yieldToEvents();
-      if (decoded >= maxIn) break;
+      if (deps.gate) await deps.gate();
     }
     afterResample(toWork.flush());
     afterDenoise(denoise.flush());
@@ -262,10 +258,6 @@ export async function processAudio(source: AudioSource, opts: Options, deps: Dep
     noiseReductionDb: denoise.noiseReductionDb(),
     spikesTamed,
   };
-  if (!out || !encoder) {
-    const lufs = preEncodeMeter.integrated();
-    return { ...common, bytes: 0, outputLufs: lufs, outputTruePeak: NaN, loudnessOk: true, peakOk: true };
-  }
   out.append(encoder.finalize().slice());
   const bytes = out.size;
   await storage.close(outName);
