@@ -15,7 +15,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The app ships a prebuilt RNNoise (src/vendor/rnnoise.wasm); check it is
+  # exactly what rnnoise/build.sh produces.
+  rnnoise:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.8
+      - run: rnnoise/build.sh out release
+      - run: cmp out/rnnoise-release.wasm src/vendor/rnnoise.wasm
+
   build:
+    needs: rnnoise
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

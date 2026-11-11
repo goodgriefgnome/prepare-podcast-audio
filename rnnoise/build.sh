@@ -47,7 +47,7 @@ flags_for() {
     # (Its SSE-only path still needs the AVX types, so -mavx is the minimum.)
     avx) echo "-O3 -msimd128 -mavx" ;;
     avx2) echo "-O3 -msimd128 -mavx2" ;;
-    release) echo "-O3 -msimd128 -mavx2" ;;
+    release) echo "-O3 -msimd128 -mavx" ;;  # measured as fast as avx2
     *) echo "unknown variant $1" >&2; return 1 ;;
   esac
 }
