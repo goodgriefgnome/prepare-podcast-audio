@@ -175,7 +175,7 @@ function options(): Options {
 
 // ---------------------------------------------------------------- process
 
-const STEP_OF: Record<Stage, number> = { clean: 0, balance: 1, encode: 2, verify: 2 };
+const STEP_OF: Record<Stage, number> = { process: 0, verify: 1 };
 let startedAt = 0;
 let wakeLock: { release(): Promise<void> } | null = null;
 
@@ -205,7 +205,7 @@ async function enoughSpace(): Promise<string | null> {
     if (!quota) return null;
     const need = workingBytes(info.duration, channels) * 1.05;
     const free = quota - (usage ?? 0);
-    if (free < need) return `There isn’t enough free storage on this device to process this recording. It needs about ${fmtBytes(need)} of temporary space; about ${fmtBytes(free)} is available.`;
+    if (free < need) return `There isn’t enough free storage on this device to process this recording. The MP3 needs about ${fmtBytes(need)}; about ${fmtBytes(free)} is available.`;
   } catch {
     /* unknown: try anyway */
   }
@@ -222,7 +222,7 @@ $("go").addEventListener("click", async () => {
   }
   $("proc-name").textContent = file.name;
   $("proc-duration").textContent = fmtDuration(info.duration);
-  setProgress("clean", 0);
+  setProgress("process", 0);
   $("eta").textContent = "Starting…";
   startedAt = performance.now();
   show("proc");
@@ -231,7 +231,7 @@ $("go").addEventListener("click", async () => {
 });
 
 $("cancel").addEventListener("click", () => {
-  // Terminating is immediate and releases the temporary files' locks.
+  // Terminating is immediate and releases the output file’s lock.
   worker.terminate();
   worker = newWorker();
   keepAwake(false);

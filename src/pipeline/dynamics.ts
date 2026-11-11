@@ -1,3 +1,5 @@
+import { gatedLoudness } from "../dsp/loudness.ts";
+
 /**
  * Gain-curve computation for the dynamics stages. Everything here works on
  * per-hop level measurements (one value per HOP samples) of the whole file,
@@ -7,6 +9,12 @@
  */
 
 export const HOP_SECONDS = 0.005;
+/**
+ * Half-width of the "local" window used instead of whole-recording
+ * statistics (speech level, loudness). The recording is assumed not to have
+ * minute-long stretches at very different levels, so ±30 s is representative.
+ */
+export const LOCAL_HALF_SECONDS = 30;
 const HOPS_PER_SECOND = 1 / HOP_SECONDS;
 const FLOOR_DB = -120;
 
@@ -235,14 +243,35 @@ export function spikeGains(levelDb: Float32Array, speech: Uint8Array): SpikeResu
 
 export interface LevelerResult {
   gain: Float32Array;
-  /** Overall speech level the leveler aims for (K-weighted dB). */
-  target: number;
+  /** Local speech level the leveler aims for at each hop (K-weighted dB). */
+  target: Float32Array;
+}
+
+/**
+ * Average speech level over a sliding ±30 s window, from phrase levels.
+ * NaN where there's too little speech nearby (filled by the caller).
+ */
+function localSpeechLevel(phrase: Float32Array, speechPhrase: Uint8Array): Float32Array {
+  // Mean of phrase levels in dB over speech: unlike a median it moves
+  // smoothly when speakers at different levels enter or leave the window.
+  const n = phrase.length;
+  const half = s2h(LOCAL_HALF_SECONDS);
+  const minCount = s2h(3);
+  const out = new Float32Array(n).fill(NaN);
+  let sum = 0, cnt = 0, lo = 0, hi = 0;
+  for (let i = 0; i < n; i++) {
+    const a = Math.max(0, i - half), b = Math.min(n, i + half + 1);
+    while (hi < b) { if (speechPhrase[hi]) { sum += phrase[hi]; cnt++; } hi++; }
+    while (lo < a) { if (speechPhrase[lo]) { sum -= phrase[lo]; cnt--; } lo++; }
+    if (cnt >= minCount) out[i] = sum / cnt;
+  }
+  return out;
 }
 
 /**
  * Rides the level of each stretch of speech (≈3 s windows) towards the
- * median speech level of the whole recording, like a careful engineer on a
- * fader. Pauses take the gain of the speech around them, with boost capped
+ * median speech level of the surrounding minute, like a careful engineer on
+ * a fader. Pauses take the gain of the speech around them, with boost capped
  * so room tone isn't lifted.
  */
 export function levelerGains(levelDb: Float32Array, speech: Uint8Array): LevelerResult {
@@ -261,11 +290,14 @@ export function levelerGains(levelDb: Float32Array, speech: Uint8Array): Leveler
   }
   const speechPhrase = new Uint8Array(n);
   for (let i = 0; i < n; i++) speechPhrase[i] = speech[i] && !Number.isNaN(phrase[i]) ? 1 : 0;
-  const target = percentile(phrase, speechPhrase, 0.5);
-  if (Number.isNaN(target)) return { gain: new Float32Array(n), target: percentile(levelDb, null, 0.9) };
+  const overall = percentile(phrase, speechPhrase, 0.5);
+  if (Number.isNaN(overall)) {
+    return { gain: new Float32Array(n), target: new Float32Array(n).fill(percentile(levelDb, null, 0.9)) };
+  }
+  const target = fillGaps(localSpeechLevel(phrase, speechPhrase), overall);
   const raw = new Float32Array(n).fill(NaN);
   for (let i = 0; i < n; i++) {
-    if (!Number.isNaN(phrase[i])) raw[i] = Math.max(-12, Math.min(12, target - phrase[i]));
+    if (!Number.isNaN(phrase[i])) raw[i] = Math.max(-12, Math.min(12, target[i] - phrase[i]));
   }
   const filled = fillGaps(raw, 0);
   // Cap boost where nobody is talking.
@@ -278,7 +310,8 @@ export function levelerGains(levelDb: Float32Array, speech: Uint8Array): Leveler
 // ---------------------------------------------------------------------------
 // Stage 3: gentle compression (inside phrases)
 
-export function compressorGains(levelDb: Float32Array, threshold: number, ratio = 2.5, knee = 6): Float32Array {
+/** `threshold`: per-hop threshold in dB. */
+export function compressorGains(levelDb: Float32Array, threshold: Float32Array, ratio = 2.5, knee = 6): Float32Array {
   const n = levelDb.length;
   // 30 ms RMS detector.
   const pw = Float32Array.from(levelDb, (d) => Math.pow(10, d / 10));
@@ -287,7 +320,7 @@ export function compressorGains(levelDb: Float32Array, threshold: number, ratio 
   const slope = 1 - 1 / ratio;
   for (let i = 0; i < n; i++) {
     const x = powerToDb(det[i]);
-    const over = x - threshold;
+    const over = x - threshold[i];
     let g = 0;
     if (over >= knee / 2) g = -slope * over;
     else if (over > -knee / 2) g = (-slope * (over + knee / 2) ** 2) / (2 * knee);
@@ -316,16 +349,89 @@ export function compressorGains(levelDb: Float32Array, threshold: number, ratio 
  * `hfDb`: 5 ms power above the crossover, after the broadband gains.
  * `fullDb`: 5 ms broadband power, after the broadband gains.
  */
-export function deEssGains(hfDb: Float32Array, fullDb: Float32Array, speechLevel: number): Float32Array {
+export function deEssGains(hfDb: Float32Array, fullDb: Float32Array, speechLevel: Float32Array): Float32Array {
   const n = hfDb.length;
-  const thr = speechLevel - 6;
   const target = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const dominance = hfDb[i] - fullDb[i]; // ≤ 0
     if (dominance < -8) continue;
-    const over = hfDb[i] - thr;
+    const over = hfDb[i] - (speechLevel[i] - 6);
     if (over <= 0) continue;
     target[i] = Math.max(-8, -over * (1 - 1 / 3));
   }
   return smoothReduction(target, s2h(0.01));
+}
+
+// ---------------------------------------------------------------------------
+// Loudness normalization
+
+/**
+ * Gain that brings the BS.1770 integrated loudness of the surrounding ±30 s
+ * to `targetLufs`, evaluated once a second and interpolated.
+ *
+ * `kPow`: K-weighted 5 ms power (mean over channels), after all other gains.
+ * `rawPow`: unweighted 5 ms power, same gains. Hops whose level would end up
+ * above `capDb` are counted as if the peak limiter had pulled them down to it.
+ * `channelFactor`: the number of output channels the signal plays on (the
+ * gated sum counts each channel), 2 for joint stereo.
+ */
+export function normalizerGains(
+  kPow: Float32Array,
+  rawPow: Float32Array,
+  targetLufs: number,
+  capDb: number,
+  channelFactor: number,
+): Float32Array {
+  const n = kPow.length;
+  const blockHops = s2h(0.4);
+  const stepHops = s2h(0.1);
+  const cap = Math.pow(10, capDb / 10);
+  const evalStep = s2h(1);
+  const half = s2h(LOCAL_HALF_SECONDS);
+  // Gated loudness of hops [a, b) after a gain of g dB.
+  const loudness = (a: number, b: number, gDb: number): number => {
+    const g2 = Math.pow(10, gDb / 10);
+    const nh = b - a;
+    const nb = Math.floor((nh - blockHops) / stepHops) + 1;
+    if (nb <= 0) return -Infinity;
+    const pre = new Float64Array(nh + 1);
+    for (let i = 0; i < nh; i++) {
+      const r = rawPow[a + i] * g2;
+      const scale = r > cap ? cap / r : 1;
+      pre[i + 1] = pre[i] + kPow[a + i] * g2 * scale;
+    }
+    const blocks = new Float64Array(nb);
+    for (let j = 0; j < nb; j++) blocks[j] = ((pre[j * stepHops + blockHops] - pre[j * stepHops]) / blockHops) * channelFactor;
+    return gatedLoudness(blocks);
+  };
+  const points: number[] = [];
+  const values: number[] = [];
+  for (let h = 0; h < n; h += evalStep) {
+    const a = Math.max(0, h - half), b = Math.min(n, h + half + 1);
+    let g = 0;
+    let ok = false;
+    // Solve loudness(g) = target; the cap makes it non-linear, so iterate.
+    for (let it = 0; it < 4; it++) {
+      const l = loudness(a, b, g);
+      if (!Number.isFinite(l)) break;
+      ok = true;
+      const step = targetLufs - l;
+      g = Math.max(-30, Math.min(40, g + step));
+      if (Math.abs(step) < 0.02) break;
+    }
+    points.push(h);
+    values.push(ok ? g : NaN);
+  }
+  const known = values.filter((v) => !Number.isNaN(v));
+  const fallback = known.length ? known.reduce((x, y) => x + y, 0) / known.length : 0;
+  const filled = fillGaps(Float32Array.from(values), fallback);
+  const out = new Float32Array(n);
+  for (let k = 0; k < points.length; k++) {
+    const h0 = points[k];
+    const h1 = k + 1 < points.length ? points[k + 1] : n;
+    const v0 = filled[k];
+    const v1 = k + 1 < points.length ? filled[k + 1] : v0;
+    for (let h = h0; h < h1; h++) out[h] = v0 + ((v1 - v0) * (h - h0)) / (h1 - h0);
+  }
+  return out;
 }

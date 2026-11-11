@@ -19,26 +19,25 @@ Each step can be turned off in the UI except the loudness and peak stages.
 | Remove rumble | 4th-order Butterworth high-pass at 80 Hz. With this off, a 20 Hz subsonic/DC filter is still applied. |
 | Reduce background noise | RNNoise, one instance per channel. Reduction is limited to about 18 dB by mixing a little of the original back in, which keeps voices natural. Its voice-activity output also drives the later stages. |
 | Tame sudden loud noises | Finds bursts shorter than 1 s that are more than 6 dB above the loud end of the surrounding speech (95th percentile, ±3 s), then pulls them to 3 dB above it. Uses 30 ms look-ahead. |
-| Even out speakers | Leveler that measures speech level over ±1.5 s windows and moves each stretch toward the recording's median speech level (±12 dB max, boost capped in pauses, smoothed in both directions). This is followed by gentle 2.5:1 compression just above speech level. |
+| Even out speakers | Leveler that measures speech level over ±1.5 s windows and moves each stretch toward the average speech level of the surrounding minute (±12 dB max, boost capped in pauses, smoothed in both directions). This is followed by gentle 2.5:1 compression just above speech level. |
 | Soften harsh "s" sounds | Split-band de-esser with a Linkwitz–Riley crossover at 5 kHz. It reduces the upper band only when that band dominates and is loud relative to speech: 3:1 ratio, at most 8 dB. |
-| Loudness and peaks | Gain to −16 LUFS, then a true-peak limiter (4× oversampled detection, 3 ms look-ahead), then the output level setting, then LAME. |
+| Loudness and peaks | Sliding-window gain to −16 LUFS, then a true-peak limiter (4× oversampled detection, 3 ms look-ahead), then the output level setting, then LAME. |
 
-Because the whole recording is analysed before any gain is applied, the level stages can look ahead and behind instead of reacting the way a real-time plugin does.
+Because gains are planned with about a minute of look-ahead, the level stages can look ahead and behind instead of reacting the way a real-time plugin does.
 
 ## Long recordings
 
-Audio is never held in memory as a whole. The pipeline streams in 1-second chunks and keeps one intermediate file in the browser's Origin Private File System (OPFS):
+The whole job is a single streaming pass over the input, plus a check of the finished MP3. Audio is never held in memory as a whole, and the only file written is the MP3 (in the browser's Origin Private File System).
 
-1. **Clean** (one pass over the input file): decode → mix to output channels → resample to 48 kHz → high-pass → noise reduction → working file (32-bit float). Level features are collected every 5 ms on the way.
-2. **Balance** (no I/O): compute the gain curves from those features, then run one read pass to measure the result's loudness.
-3. **Encode:** read the working file → apply gains → resample to 44.1 kHz → loudness gain → limiter → MP3, written to OPFS.
-4. **Verify:** decode the MP3 and measure loudness and true peak, and report a miss.
+1. **Process:** decode → mix to output channels → resample to 48 kHz → high-pass → noise reduction. The cleaned audio then waits in a delay line of about 85 s while level features are collected every 5 ms. Gains for each 20 s stretch are worked out from the features of the ±65 s around it. The audio then has the gains applied and is resampled to 44.1 kHz, limited, set to the output level and encoded.
+2. **Verify:** decode the MP3, measure loudness and true peak, and report a miss.
 
-Temporary disk use is about 690 MB per hour (mono) or 1.4 GB per hour (stereo), plus the MP3. The app checks the available storage quota before starting.
+Instead of whole-recording statistics, the level stages use a sliding window of about a minute (±30 s). This assumes a recording doesn't have minute-long stretches at very different levels:
 
-Memory use stays roughly constant regardless of length, apart from the per-5 ms analysis arrays (about 15 MB per hour).
+- **Leveler:** aims each stretch of speech at the average speech level of the surrounding minute.
+- **Loudness normalizer:** sets the gain so that the BS.1770 gated loudness of the surrounding minute is −16 LUFS. It allows for the de-esser's cut and the limiter. Evaluated once a second and interpolated.
 
-Processing speed is around 4–5× faster than real time on a desktop browser. Noise reduction takes most of that time.
+Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo) plus about 30 MB per hour of per-5 ms arrays. Processing runs about 4–5× faster than real time on a desktop; noise reduction is most of that.
 
 ## Development
 

@@ -172,9 +172,10 @@ export class DenoiseStream {
 export class HopFeatures {
   private kw: Cascade[];
   private xo: LR4Crossover[];
-  private kAcc: F32List = new F32List();
-  private rAcc: F32List = new F32List();
-  private hAcc: F32List = new F32List();
+  /** Completed hops so far: K-weighted, unweighted and above-crossover power. */
+  readonly kAcc: F32List = new F32List();
+  readonly rAcc: F32List = new F32List();
+  readonly hAcc: F32List = new F32List();
   private pos = 0; // samples into the current hop
   private k = 0;
   private r = 0;
