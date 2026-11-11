@@ -1,0 +1,27 @@
+name: Build RNNoise
+
+# Builds every RNNoise variant (for speed comparisons) and uploads them.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [rnnoise/**, .github/workflows/rnnoise.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.8
+      - run: rnnoise/build.sh out o2 o3 simd sse41 avx2 release
+      - name: Same output on a second build
+        run: rnnoise/build.sh again release && cmp out/rnnoise-release.wasm again/rnnoise-release.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rnnoise-wasm
+          path: out/
