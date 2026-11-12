@@ -1,0 +1,16 @@
+# For rebuilding the restoration models (build.sh). CPU-only is fine.
+torch==2.15.0
+torchaudio==2.11.1
+onnx==1.23.2
+onnxruntime==1.31.1
+numpy==2.5.4
+scipy==1.18.1
+librosa==1.0.0
+torchlibrosa==0.1.0
+soundfile==0.14.0
+omegaconf==2.4.0
+rich==15.0.0
+pandas==3.1.1
+matplotlib==3.11.2
+tqdm==4.70.1
+tabulate==0.10.0

@@ -58,6 +58,32 @@ Everything after the front end stays on one thread: gains, the 44.1 kHz resample
 
 Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo), up to one 34 s block per thread in flight, plus about 30 MB per hour of per-5 ms arrays.
 
+## Speech Restoration Lab
+
+`restore.html` is a separate, experimental page for trying generative speech restoration on an excerpt of your own recording before anything like it goes into the app. It runs, side by side and on your device:
+
+| Version | What it is |
+|---|---|
+| Original | The excerpt, mixed to mono at 44.1 kHz |
+| App’s noise reduction | RNNoise with the app’s 18 dB limit (the baseline) |
+| [VoiceFixer](https://github.com/haoheliu/voicefixer) | Restores a mel spectrogram (ResUNet), then a 44.1 kHz vocoder re-synthesises the voice. Mode 0 (the default). |
+| [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) | The enhancer: a denoiser, then latent conditional flow matching generates the voice's features, then a UnivNet vocoder. Steps, denoise strength (λ) and prior temperature (τ) can be set; defaults are the model's own (16 midpoint steps, 0.5, 0.5). |
+
+All versions can be loudness-matched to −16 LUFS for a fair comparison, and switched while playing.
+
+[SelfRemaster](https://github.com/Takaaki-Saeki/ssl_speech_restoration_v2) isn't included: it has no general-purpose model. It learns from the degraded recordings themselves, so it would need training (on a GPU, with hours of audio) for each recording setup.
+
+**How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web, on WebGPU when the browser has it and otherwise on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). The conversion keeps the models' maths but changes how some parts are expressed so they run in a browser:
+
+- STFTs and inverse STFTs are written as convolutions (matches the originals to 1e-8).
+- Resemble Enhance's flow-matching ODE loop, noise and chunking run in JavaScript; its location-variable convolutions are rewritten as matrix multiplies (identical results), and its vocoder runs on 3 s windows with 0.3 s of context each side, because its intermediate tensors don't fit in WebAssembly's 4 GB for longer pieces.
+- Weights are stored as 16-bit floats and computed in 32-bit (VoiceFixer's output changes by 0.04 dB on average; Resemble Enhance's flow model is unchanged).
+- Long excerpts are processed in 30 s pieces with 1 s crossfades (both models' own segment length).
+
+**Speed** (desktop, CPU, 4 threads, per second of audio): VoiceFixer about 1.8 s; Resemble Enhance about 13 s with default settings. WebGPU should be much faster.
+
+**Downloads:** VoiceFixer 216 MB, Resemble Enhance 730 MB, fetched on first use and kept in the browser's cache. The page looks for them in `models/` next to it, or wherever `?models=<url>` points.
+
 ## Development
 
 ```bash
@@ -99,5 +125,7 @@ The app ships a WebAssembly build of [RNNoise](https://github.com/xiph/rnnoise) 
 - `src/pipeline/stream.ts` — streaming noise reduction and level features
 - `src/pipeline/denoise.ts` — loads RNNoise
 - `rnnoise/build.sh` — builds RNNoise
+- `restore.html`, `src/restore/` — the Speech Restoration Lab
+- `restore-models/` — converts VoiceFixer and Resemble Enhance to ONNX for the lab
 - `src/dsp/` — filters, BS.1770 loudness, resampler, true-peak meter and limiter
 - `src/io/` — WAV and MP3 readers, OPFS storage
