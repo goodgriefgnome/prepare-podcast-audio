@@ -105,27 +105,45 @@ async function pickBackend() {
 
 const CACHE = "ppa-restore-models-v1";
 
-/** Fetches a model, from the browser's cache when it's been downloaded before. */
+/** index.json (written by restore-models/index.py): each model's parts, size and hash. */
+type ModelIndex = Record<string, { parts: string[]; size: number; sha256: string }>;
+let index: Promise<ModelIndex> | null = null;
+
+/**
+ * Fetches a model, from the browser's cache when it's been downloaded before.
+ * Models are stored in parts under 100 MB (see restore-models/build.sh).
+ */
 async function modelBytes(base: string, name: string, onProgress: (loaded: number, total: number) => void): Promise<ArrayBuffer> {
-  const url = new URL(name, base).href;
+  index ??= fetch(new URL("index.json", base)).then((r) => {
+    if (!r.ok) throw new Error(`Couldn't find the models (${r.status})`);
+    return r.json() as Promise<ModelIndex>;
+  });
+  const entry = (await index)[name];
+  if (!entry) throw new Error(`${name} isn't available`);
+  // The hash is part of the key, so a rebuilt model is downloaded again.
+  const key = new URL(`${name}?sha256=${entry.sha256}`, base).href;
   const cache = await caches.open(CACHE).catch(() => null);
-  const hit = await cache?.match(url);
+  const hit = await cache?.match(key);
   if (hit) return hit.arrayBuffer();
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`Couldn't download ${name} (${res.status})`);
-  const total = Number(res.headers.get("content-length")) || 0;
-  const reader = res.body.getReader();
-  const parts: Uint8Array[] = [];
+  const chunks: Uint8Array[] = [];
   let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value);
-    loaded += value.length;
-    onProgress(loaded, total);
+  for (const part of entry.parts) {
+    const res = await fetch(new URL(part, base));
+    if (!res.ok || !res.body) throw new Error(`Couldn't download ${part} (${res.status})`);
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      onProgress(loaded, entry.size);
+    }
   }
-  const blob = new Blob(parts as BlobPart[]);
-  await cache?.put(url, new Response(blob, { headers: { "content-type": "application/octet-stream" } })).catch(() => {});
+  if (loaded !== entry.size) throw new Error(`${name} downloaded incompletely (${loaded} of ${entry.size} bytes)`);
+  const blob = new Blob(chunks as BlobPart[]);
+  // Drop older versions of this model before keeping the new one.
+  for (const old of (await cache?.keys()) ?? []) if (old.url.includes(`/${name}?`)) await cache?.delete(old);
+  await cache?.put(key, new Response(blob, { headers: { "content-type": "application/octet-stream" } })).catch(() => {});
   return blob.arrayBuffer();
 }
 
@@ -384,7 +402,10 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
 
 // ------------------------------------------------------------------ driver
 
-self.onmessage = async (e: MessageEvent<RestoreRequest>) => {
+// In a production build ONNX Runtime is bundled into this script, so its
+// WebAssembly threads ("em-pthread" workers) load this file too; they must
+// keep ONNX Runtime's own message handler.
+if (self.name !== "em-pthread") self.onmessage = async (e: MessageEvent<RestoreRequest>) => {
   const req = e.data;
   let x: Float32Array;
   try {

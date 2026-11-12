@@ -167,11 +167,14 @@ fileInput.addEventListener("change", async () => {
     $<HTMLButtonElement>("run").disabled = true;
   }
 });
+// Resemble Enhance's controls are only on the page when it's offered.
 for (const id of ["lambd", "tau"]) {
+  if (!$(id)) continue;
   const show = () => ($(`${id}-val`).textContent = Number($<HTMLInputElement>(id).value).toFixed(1));
   $(id).addEventListener("input", show);
   show();
 }
+const setting = (id: string, fallback: number) => Number(($(id) as HTMLInputElement | null)?.value ?? fallback);
 
 // ------------------------------------------------------------------ running
 
@@ -183,7 +186,7 @@ $("run").addEventListener("click", () => {
   if (!Number.isFinite(start)) start = 0;
   const length = Number($<HTMLSelectElement>("length").value);
   if (duration && start >= duration - 1) start = Math.max(0, duration - length);
-  const methods = (["rnnoise", "voicefixer", "resemble"] as Method[]).filter((m) => $<HTMLInputElement>(`m-${m}`).checked);
+  const methods = (["rnnoise", "voicefixer", "resemble"] as Method[]).filter((m) => ($(`m-${m}`) as HTMLInputElement | null)?.checked);
   resetVersions(methods);
   worker?.terminate();
   worker = new Worker(new URL("./restore-worker.ts", import.meta.url), { type: "module" });
@@ -228,9 +231,9 @@ $("run").addEventListener("click", () => {
     length,
     methods,
     resemble: {
-      nfe: Number($<HTMLSelectElement>("nfe").value),
-      lambd: Number($<HTMLInputElement>("lambd").value),
-      tau: Number($<HTMLInputElement>("tau").value),
+      nfe: setting("nfe", 32),
+      lambd: setting("lambd", 0.5),
+      tau: setting("tau", 0.5),
     },
     modelBase: MODEL_BASE,
     seed: (Math.random() * 2 ** 32) >>> 0,

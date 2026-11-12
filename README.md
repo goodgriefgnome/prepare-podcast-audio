@@ -67,9 +67,11 @@ Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo), up to o
 | Original | The excerpt, mixed to mono at 44.1 kHz |
 | App’s noise reduction | RNNoise with the app’s 18 dB limit (the baseline) |
 | [VoiceFixer](https://github.com/haoheliu/voicefixer) | Restores a mel spectrogram (ResUNet), then a 44.1 kHz vocoder re-synthesises the voice. Mode 0 (the default). |
-| [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) | The enhancer: a denoiser, then latent conditional flow matching generates the voice's features, then a UnivNet vocoder. Steps, denoise strength (λ) and prior temperature (τ) can be set; defaults are the model's own (16 midpoint steps, 0.5, 0.5). |
+
 
 All versions can be loudness-matched to −16 LUFS for a fair comparison, and switched while playing.
+
+[Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) (its enhancer: a denoiser, then latent conditional flow matching, then a UnivNet vocoder) is converted and supported by the code, but not offered on the page for now: its models are 730 MB, more than GitHub Pages should host. `restore-models/build.sh <dir> resemble` builds them; to try it, host them somewhere that allows cross-origin downloads, open the page with `?models=<url>`, and put its toggle back in `restore.html`.
 
 [SelfRemaster](https://github.com/Takaaki-Saeki/ssl_speech_restoration_v2) isn't included: it has no general-purpose model. It learns from the degraded recordings themselves, so it would need training (on a GPU, with hours of audio) for each recording setup.
 
@@ -82,7 +84,7 @@ All versions can be loudness-matched to −16 LUFS for a fair comparison, and sw
 
 **Speed** (desktop, CPU, 4 threads, per second of audio): VoiceFixer about 1.8 s; Resemble Enhance about 13 s with default settings. WebGPU should be much faster.
 
-**Downloads:** VoiceFixer 216 MB, Resemble Enhance 730 MB, fetched on first use and kept in the browser's cache. The page looks for them in `models/` next to it, or wherever `?models=<url>` points.
+**Downloads:** VoiceFixer is 216 MB, fetched on first use and kept in the browser's cache. Models are split into parts under 100 MB with an `index.json` (size and SHA-256 per model). The page looks for them in `models/` next to it, or wherever `?models=<url>` points. The deploy workflow builds VoiceFixer with `restore-models/build.sh` (cached until `restore-models/` changes) and publishes it with the site.
 
 ## Development
 

@@ -39,6 +39,23 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # The restoration lab's VoiceFixer model (restore.html), converted from the
+      # published weights and cached until restore-models/ changes.
+      - id: models
+        uses: actions/cache@v4
+        with:
+          path: restore-models/out
+          key: restore-models-${{ hashFiles('restore-models/**') }}
+      - if: steps.models.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - if: steps.models.outputs.cache-hit != 'true'
+        run: |
+          pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchaudio==2.11.1
+          pip install --quiet -r restore-models/requirements.txt
+          restore-models/build.sh restore-models/out voicefixer
+      - run: cp -r restore-models/out dist/models
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
