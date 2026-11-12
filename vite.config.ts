@@ -28,25 +28,30 @@ self.addEventListener("activate", (e) => {
       .then(() => self.clients.claim()),
   );
 });
+// The Speech Restoration Lab needs cross-origin isolation so ONNX Runtime can
+// use several threads. GitHub Pages can't send the headers, so they're added
+// here: COOP + COEP on the lab page, and COEP + CORP on every same-origin file,
+// since an isolated page's workers must carry COEP themselves.
+const withHeaders = (r, extra) => {
+  if (!r || r.type === "opaque" || r.status === 0) return r;
+  const h = new Headers(r.headers);
+  for (const [k, v] of Object.entries(extra)) h.set(k, v);
+  return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
+};
+const ISOLATE = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" };
+const EMBEDDABLE = { "Cross-Origin-Embedder-Policy": "require-corp", "Cross-Origin-Resource-Policy": "same-origin" };
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET" || new URL(req.url).origin !== self.location.origin) return;
   if (req.mode === "navigate") {
     if (/restore\.html$/.test(new URL(req.url).pathname)) {
-      // Cross-origin isolation, so ONNX Runtime can use several threads
-      // (GitHub Pages can't send these headers itself).
-      e.respondWith(fetch(req).then((r) => {
-        const h = new Headers(r.headers);
-        h.set("Cross-Origin-Opener-Policy", "same-origin");
-        h.set("Cross-Origin-Embedder-Policy", "require-corp");
-        return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
-      }));
+      e.respondWith(fetch(req).then((r) => withHeaders(r, ISOLATE)));
       return;
     }
     e.respondWith(fetch(req).catch(() => caches.match("./", { ignoreSearch: true })));
     return;
   }
-  e.respondWith(caches.match(req, { ignoreSearch: true }).then((hit) => hit || fetch(req)));
+  e.respondWith(caches.match(req, { ignoreSearch: true }).then((hit) => hit || fetch(req)).then((r) => withHeaders(r, EMBEDDABLE)));
 });
 `;
       this.emitFile({ type: "asset", fileName: "sw.js", source });

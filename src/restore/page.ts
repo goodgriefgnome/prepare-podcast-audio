@@ -240,7 +240,7 @@ $("run").addEventListener("click", () => {
 
 // Multithreaded WebAssembly needs cross-origin isolation, which the service
 // worker adds; reload once if this page loaded before it was in control.
-if ("serviceWorker" in navigator && !location.hostname.match(/^(localhost|127\.)/)) {
+if ("serviceWorker" in navigator && !import.meta.env.DEV) {
   navigator.serviceWorker.register("sw.js").then(() => {
     if (!self.crossOriginIsolated && navigator.serviceWorker.controller && !sessionStorage.getItem("coi-reload")) {
       sessionStorage.setItem("coi-reload", "1");
