@@ -75,7 +75,7 @@ All versions can be loudness-matched to −16 LUFS for a fair comparison, and sw
 
 [SelfRemaster](https://github.com/Takaaki-Saeki/ssl_speech_restoration_v2) isn't included: it has no general-purpose model. It learns from the degraded recordings themselves, so it would need training (on a GPU, with hours of audio) for each recording setup.
 
-**How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web, on WebGPU when the browser has it and otherwise on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). The conversion keeps the models' maths but changes how some parts are expressed so they run in a browser:
+**How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). VoiceFixer always runs on the CPU: on ONNX Runtime's WebGPU backend its output is noise. Resemble Enhance is set to use WebGPU when the browser has it, but that hasn't been checked on a real GPU. The conversion keeps the models' maths but changes how some parts are expressed so they run in a browser:
 
 - STFTs and inverse STFTs are written as convolutions (matches the originals to 1e-8).
 - Resemble Enhance's flow-matching ODE loop, noise and chunking run in JavaScript; its location-variable convolutions are rewritten as matrix multiplies (identical results), and its vocoder runs on 3 s windows with 0.3 s of context each side, because its intermediate tensors don't fit in WebAssembly's 4 GB for longer pieces.

@@ -84,7 +84,7 @@ function gaussian(seed: number) {
 
 const tensor = (data: Float32Array, dims: number[]) => new ort.Tensor("float32", data, dims);
 
-let backend: { eps: string[]; text: string } | null = null;
+let backend: { gpu: boolean; cpu: string } | null = null;
 async function pickBackend() {
   if (backend) return backend;
   const threads = self.crossOriginIsolated ? Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 1)) : 1;
@@ -96,10 +96,8 @@ async function pickBackend() {
   } catch {
     gpu = false;
   }
-  backend = gpu
-    ? { eps: ["webgpu", "wasm"], text: `WebGPU (CPU fallback: ${threads} thread${threads === 1 ? "" : "s"})` }
-    : { eps: ["wasm"], text: `CPU, ${threads} thread${threads === 1 ? "" : "s"}${self.crossOriginIsolated ? "" : " (multithreading unavailable)"}` };
-  post({ type: "backend", text: backend.text });
+  const cpu = `CPU, ${threads} thread${threads === 1 ? "" : "s"}${self.crossOriginIsolated ? "" : " (multithreading unavailable)"}`;
+  backend = { gpu, cpu };
   return backend;
 }
 
@@ -147,8 +145,14 @@ async function modelBytes(base: string, name: string, onProgress: (loaded: numbe
   return blob.arrayBuffer();
 }
 
-async function session(req: RestoreRequest, method: Method, name: string, what: string): Promise<ort.InferenceSession> {
-  const { eps } = await pickBackend();
+/**
+ * Creates a session on WebGPU when the model is known to run correctly there
+ * (`gpuOk`) and the browser has it, otherwise on the CPU.
+ */
+async function session(req: RestoreRequest, method: Method, name: string, what: string, gpuOk: boolean): Promise<ort.InferenceSession> {
+  const b = await pickBackend();
+  const eps = gpuOk && b.gpu ? ["webgpu", "wasm"] : ["wasm"];
+  post({ type: "backend", text: eps[0] === "webgpu" ? `WebGPU (CPU fallback: ${b.cpu})` : b.cpu });
   const bytes = await modelBytes(req.modelBase, name, (l, t) =>
     post({ type: "status", method, text: `Downloading ${what}: ${(l / 1e6).toFixed(0)}${t ? ` of ${(t / 1e6).toFixed(0)}` : ""} MB`, fraction: t ? l / t : 0 }),
   );
@@ -232,7 +236,9 @@ async function runRnnoise(x: Float32Array): Promise<Float32Array> {
 
 async function runVoiceFixer(req: RestoreRequest, x: Float32Array): Promise<Float32Array> {
   const SEG = 30 * SR, OV = SR, HOP = SEG - OV;
-  const s = await session(req, "voicefixer", "vf.f16.onnx", "VoiceFixer (216 MB)");
+  // ONNX Runtime's WebGPU backend computes VoiceFixer wrongly (the output is
+  // noise), so it always runs on the CPU, where it matches the original.
+  const s = await session(req, "voicefixer", "vf.f16.onnx", "VoiceFixer (216 MB)", false);
   try {
     const pieces: Float32Array[] = [];
     const count = Math.max(1, Math.ceil((x.length - OV) / HOP));
@@ -282,7 +288,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
   const say = (text: string, f: number) => post({ type: "status", method: "resemble", text, fraction: f });
 
   // 1. Mels, denoiser and the starting latent.
-  let s = await session(req, "resemble", "re_front.f16.onnx", "Resemble Enhance, part 1 of 4 (143 MB)");
+  let s = await session(req, "resemble", "re_front.f16.onnx", "Resemble Enhance, part 1 of 4 (143 MB)", true);
   try {
     for (let i = 0; i < n; i++) {
       say(`Analysing ${i + 1} of ${n}…`, (i / n) * 0.05);
@@ -307,7 +313,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
   }
 
   // 2. The flow-matching ODE (midpoint method), from the noisy start to the restored latent.
-  s = await session(req, "resemble", "re_velocity.f16.onnx", "Resemble Enhance, part 2 of 4 (138 MB)");
+  s = await session(req, "resemble", "re_velocity.f16.onnx", "Resemble Enhance, part 2 of 4 (138 MB)", true);
   try {
     const steps = Math.max(1, Math.floor(nfe / 2));
     const ts = timeGrid(steps);
@@ -340,7 +346,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
   }
 
   // 3. Latent to vocoder features.
-  s = await session(req, "resemble", "re_decode.f16.onnx", "Resemble Enhance, part 3 of 4 (102 MB)");
+  s = await session(req, "resemble", "re_decode.f16.onnx", "Resemble Enhance, part 3 of 4 (102 MB)", true);
   try {
     for (const p of parts) {
       const o = await s.run({ psi1: tensor(p.psi!, [1, 64, p.F]) });
@@ -354,7 +360,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
 
   // 4. Vocoder, on windows of W frames with C frames of context each side;
   // neighbouring windows overlap by X frames and are crossfaded.
-  s = await session(req, "resemble", "re_vocoder.f16.onnx", "Resemble Enhance, part 4 of 4 (347 MB)");
+  s = await session(req, "resemble", "re_vocoder.f16.onnx", "Resemble Enhance, part 4 of 4 (347 MB)", true);
   const W = 300, C = 32, X = 8;
   try {
     const totalWin = parts.reduce((t, p) => t + Math.ceil(p.F / W), 0);
