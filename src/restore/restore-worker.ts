@@ -17,8 +17,11 @@ import { Resampler } from "../dsp/resampler.ts";
 import { openAudio } from "../io/mp3.ts";
 import { rnnoiseFactory } from "../pipeline/denoise.ts";
 import { runBlock, WORK_RATE } from "../pipeline/frontend.ts";
+import { toneMatch } from "./tone.ts";
 
 export type Method = "rnnoise" | "voicefixer" | "resemble";
+/** Versions shown on the page: the input, each method, and VoiceFixer with the recording's tone put back. */
+export type VersionKey = Method | "original" | "vftone";
 
 export interface ResembleSettings {
   /** Velocity evaluations (midpoint solver: two per step). */
@@ -44,9 +47,9 @@ export type RestoreRequest = {
 
 export type RestoreResponse =
   | { type: "backend"; text: string }
-  | { type: "status"; method: Method | "input"; text: string; fraction: number }
-  | { type: "result"; method: Method | "original"; audio: Float32Array; seconds: number; lufs: number }
-  | { type: "error"; method: Method | "input"; message: string }
+  | { type: "status"; method: VersionKey | "input"; text: string; fraction: number }
+  | { type: "result"; method: VersionKey; audio: Float32Array; seconds: number; lufs: number }
+  | { type: "error"; method: VersionKey | "input"; message: string }
   | { type: "done" };
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -227,8 +230,8 @@ function loudness(x: Float32Array): number {
 
 // ------------------------------------------------------------------ methods
 
-async function runRnnoise(x: Float32Array): Promise<Float32Array> {
-  post({ type: "status", method: "rnnoise", text: "Reducing noise…", fraction: 0 });
+async function runRnnoise(x: Float32Array, report: VersionKey = "rnnoise"): Promise<Float32Array> {
+  post({ type: "status", method: report, text: "Reducing noise…", fraction: 0 });
   const r = await runBlock({ start: 0, end: null, from: 0, input: [x] }, { channels: 1, rumble: true, noise: true, inRate: SR }, rnnoiseFactory);
   const rs = new Resampler(WORK_RATE, SR, 1);
   return concat([rs.push(r.audio)[0], rs.flush()[0]]).subarray(0, x.length).slice();
@@ -423,17 +426,32 @@ if (self.name !== "em-pthread") self.onmessage = async (e: MessageEvent<RestoreR
     post({ type: "done" });
     return;
   }
-  const send = (method: Method | "original", y: Float32Array) => {
+  const send = (method: VersionKey, y: Float32Array) => {
     const copy = y.slice();
     post({ type: "result", method, audio: copy, seconds: copy.length / SR, lufs: loudness(copy) }, [copy.buffer]);
   };
   send("original", x);
+  let cleaned: Float32Array | null = null; // the app's noise reduction, the tone reference
   for (const m of req.methods) {
     const t0 = performance.now();
     try {
       const y = m === "rnnoise" ? await runRnnoise(x) : m === "voicefixer" ? await runVoiceFixer(req, x) : await runResemble(req, x);
+      if (m === "rnnoise") cleaned = y;
       post({ type: "status", method: m, text: `Done in ${((performance.now() - t0) / 1000).toFixed(0)} s`, fraction: 1 });
       send(m, y);
+      if (m === "voicefixer") {
+        // VoiceFixer comes out thin; match its spectral balance to the
+        // noise-reduced recording (see tone.ts).
+        try {
+          cleaned ??= await runRnnoise(x, "vftone");
+          post({ type: "status", method: "vftone", text: "Matching tone…", fraction: 0.5 });
+          const z = toneMatch(y, cleaned, SR);
+          post({ type: "status", method: "vftone", text: "VoiceFixer, EQ’d to the recording’s own tone", fraction: 1 });
+          send("vftone", z);
+        } catch (err) {
+          post({ type: "error", method: "vftone", message: err instanceof Error ? err.message : String(err) });
+        }
+      }
     } catch (err) {
       console.error(err);
       post({ type: "error", method: m, message: err instanceof Error ? err.message : String(err) });

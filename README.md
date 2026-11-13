@@ -68,6 +68,7 @@ Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo), up to o
 | App’s noise reduction | RNNoise with the app’s 18 dB limit (the baseline) |
 | [VoiceFixer](https://github.com/haoheliu/voicefixer) | Restores a mel spectrogram (ResUNet), then a 44.1 kHz vocoder re-synthesises the voice. Mode 0 (the default). |
 
+| VoiceFixer, tone-matched | VoiceFixer comes out thin (about 3 dB less at 100–200 Hz and 2–4 dB more from 1.6 to 12.8 kHz than clean speech). This version gets a smooth linear-phase EQ (third-octave resolution, at most ±9 dB, flat below 150 Hz) that matches its long-term spectrum to the noise-reduced recording's, so the speaker's own tone comes back (`src/restore/tone.ts`). |
 
 All versions can be loudness-matched to −16 LUFS for a fair comparison, and switched while playing.
 

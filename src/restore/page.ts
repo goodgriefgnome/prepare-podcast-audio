@@ -1,7 +1,7 @@
 import "../style.css";
 import "./restore.css";
 import { openAudio } from "../io/mp3.ts";
-import type { Method, RestoreRequest, RestoreResponse } from "./restore-worker.ts";
+import type { Method, RestoreRequest, RestoreResponse, VersionKey } from "./restore-worker.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const SR = 44100;
@@ -10,13 +10,14 @@ const TARGET = -16;
 /** Where the models are; `?models=<url>` overrides (for testing other hosts). */
 const MODEL_BASE = new URL(new URLSearchParams(location.search).get("models") ?? "models/", location.href).href;
 
-const LABELS: Record<Method | "original", string> = {
+const LABELS: Record<VersionKey, string> = {
   original: "Original",
   rnnoise: "App’s noise reduction",
   voicefixer: "VoiceFixer",
+  vftone: "VoiceFixer, tone-matched",
   resemble: "Resemble Enhance",
 };
-const ORDER: (Method | "original")[] = ["original", "rnnoise", "voicefixer", "resemble"];
+const ORDER: VersionKey[] = ["original", "rnnoise", "voicefixer", "vftone", "resemble"];
 
 function clock(s: number): string {
   s = Math.max(0, Math.floor(s));
@@ -31,7 +32,7 @@ function parseClock(v: string): number {
 // ------------------------------------------------------------------ versions
 
 interface Version {
-  key: Method | "original";
+  key: VersionKey;
   row: HTMLLIElement;
   status: HTMLElement;
   bar: HTMLElement;
@@ -39,8 +40,8 @@ interface Version {
   lufs: number;
   urls: { raw?: string; matched?: string };
 }
-const versions = new Map<Method | "original", Version>();
-let current: Method | "original" | null = null;
+const versions = new Map<VersionKey, Version>();
+let current: VersionKey | null = null;
 
 function wavBlob(x: Float32Array, gain: number): Blob {
   const n = x.length;
@@ -82,13 +83,13 @@ function resetVersions(methods: Method[]) {
   const audio = $<HTMLAudioElement>("audio");
   audio.pause();
   audio.removeAttribute("src");
-  for (const key of ORDER.filter((k) => k === "original" || methods.includes(k as Method))) {
+  for (const key of ORDER.filter((k) => k === "original" || methods.includes((k === "vftone" ? "voicefixer" : k) as Method))) {
     const row = document.createElement("li");
     row.className = "version";
     row.innerHTML = `<button class="pick-version" type="button" disabled><span class="key num"></span><span class="name"></span></button>
       <span class="status hint"></span><a class="btn" hidden download>WAV</a><div class="vbar"><div></div></div>`;
     row.querySelector(".name")!.textContent = LABELS[key];
-    row.querySelector(".key")!.textContent = String(ORDER.indexOf(key) + 1);
+    row.querySelector(".key")!.textContent = String(versions.size + 1);
     const v: Version = { key, row, status: row.querySelector(".status")!, bar: row.querySelector(".vbar > div")!, audio: null, lufs: NaN, urls: {} };
     v.status.textContent = key === "original" ? "Reading…" : "Waiting";
     row.querySelector("button")!.addEventListener("click", () => select(key));
@@ -108,7 +109,7 @@ function refreshLinks(v: Version) {
   }
 }
 
-function select(key: Method | "original") {
+function select(key: VersionKey) {
   const v = versions.get(key);
   if (!v?.audio) return;
   const audio = $<HTMLAudioElement>("audio");
@@ -139,7 +140,8 @@ $<HTMLInputElement>("seek").addEventListener("input", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
   const n = Number(e.key);
-  if (n >= 1 && n <= 4) select(ORDER[n - 1]);
+  const shown = [...versions.keys()];
+  if (n >= 1 && n <= shown.length) select(shown[n - 1]);
   else if (e.key === " " && current) {
     e.preventDefault();
     audio.paused ? void audio.play() : audio.pause();
