@@ -1,0 +1,51 @@
+# Builds the restoration lab's larger models (Sidon, PASE, FlowSE) and attaches
+# them to the restore-models-v1 release, from which people download them and
+# open them in restore.html. Too big for GitHub Pages, so not part of the site.
+name: Restoration lab models
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - restore-models/build.sh
+      - restore-models/export_sidon.py
+      - restore-models/export_pase.py
+      - restore-models/export_flowse.py
+      - restore-models/fp16.py
+      - restore-models/requirements.txt
+      - restore-models/RELEASE.md
+      - .github/workflows/restore-models.yml
+
+concurrency:
+  group: restore-models
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # FlowSE's checkpoint alone is 4 GB; make room.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: |
+          pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchaudio==2.11.1
+          pip install --quiet -r restore-models/requirements.txt
+      - run: restore-models/build.sh --release "$RUNNER_TEMP/models" sidon pase flowse
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=restore-models-v1
+          if ! gh release view "$tag" > /dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --title "Restoration lab models" --notes-file restore-models/RELEASE.md --latest=false
+          else
+            gh release edit "$tag" --notes-file restore-models/RELEASE.md
+          fi
+          gh release upload "$tag" "$RUNNER_TEMP"/models/* --clobber

@@ -2,6 +2,14 @@ import "../style.css";
 import "./restore.css";
 import { openAudio } from "../io/mp3.ts";
 import type { Method, RestoreRequest, RestoreResponse, VersionKey } from "./restore-worker.ts";
+// Only the constant: importing it from the worker module would bundle the worker into the page.
+const MODEL_FILES: Record<Exclude<Method, "rnnoise">, string[]> = {
+  resemble: [],
+  sidon: ["sidon_predictor.f16.onnx", "sidon_vocoder.f16.onnx"],
+  pase: ["pase_encoder.f16.onnx", "pase_vocoder.f16.onnx"],
+  flowse: ["flowse_mel.onnx", "flowse_velocity.f16.onnx", "flowse_vocoder.f16.onnx"],
+  flowse_text: ["flowse_mel.onnx", "flowse_velocity.f16.onnx", "flowse_vocoder.f16.onnx", "flowse_vocab.txt"],
+};
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const SR = 44100;
@@ -14,8 +22,15 @@ const LABELS: Record<VersionKey, string> = {
   original: "Original",
   rnnoise: "App’s noise reduction",
   resemble: "Resemble Enhance",
+  sidon: "Sidon",
+  pase: "PASE",
+  flowse: "FlowSE",
+  flowse_text: "FlowSE with transcript",
 };
-const ORDER: VersionKey[] = ["original", "rnnoise", "resemble"];
+const METHODS: Method[] = ["rnnoise", "resemble", "sidon", "pase", "flowse", "flowse_text"];
+const ORDER: VersionKey[] = ["original", ...METHODS];
+/** Models that run from files the person picks, rather than downloading. */
+const LOCAL: Method[] = ["sidon", "pase", "flowse", "flowse_text"];
 
 function clock(s: number): string {
   s = Math.max(0, Math.floor(s));
@@ -176,6 +191,26 @@ for (const id of ["lambd", "tau"]) {
 }
 const setting = (id: string, fallback: number) => Number(($(id) as HTMLInputElement | null)?.value ?? fallback);
 
+// Model files chosen from disk, by name. Picking more adds to (or replaces) them.
+const localFiles: Record<string, File> = {};
+function refreshLocal() {
+  for (const m of LOCAL) {
+    const box = $<HTMLInputElement>(`m-${m}`);
+    const missing = MODEL_FILES[m as Exclude<Method, "rnnoise">].filter((n) => !localFiles[n]);
+    const wasDisabled = box.disabled;
+    box.disabled = missing.length > 0;
+    if (box.disabled) box.checked = false;
+    else if (wasDisabled && m !== "flowse_text") box.checked = true;
+    const need = document.querySelector<HTMLElement>(`.need[data-for="${m}"]`)!;
+    need.textContent = missing.length ? `Needs ${missing.join(", ")}.` : "Files ready.";
+  }
+}
+$<HTMLInputElement>("model-files").addEventListener("change", (e) => {
+  for (const f of (e.target as HTMLInputElement).files ?? []) localFiles[f.name] = f;
+  refreshLocal();
+});
+refreshLocal();
+
 // ------------------------------------------------------------------ running
 
 let worker: Worker | null = null;
@@ -186,7 +221,13 @@ $("run").addEventListener("click", () => {
   if (!Number.isFinite(start)) start = 0;
   const length = Number($<HTMLSelectElement>("length").value);
   if (duration && start >= duration - 1) start = Math.max(0, duration - length);
-  const methods = (["rnnoise", "resemble"] as Method[]).filter((m) => ($(`m-${m}`) as HTMLInputElement | null)?.checked);
+  const methods = METHODS.filter((m) => ($(`m-${m}`) as HTMLInputElement | null)?.checked);
+  const transcript = $<HTMLTextAreaElement>("transcript").value.trim();
+  if (methods.includes("flowse_text") && !transcript) {
+    $("backend").textContent = "Type the excerpt’s transcript under FlowSE settings, or untick “FlowSE with transcript”.";
+    ($<HTMLDetailsElement>("flowse-settings")).open = true;
+    return;
+  }
   resetVersions(methods);
   worker?.terminate();
   worker = new Worker(new URL("./restore-worker.ts", import.meta.url), { type: "module" });
@@ -235,8 +276,10 @@ $("run").addEventListener("click", () => {
       lambd: setting("lambd", 0.5),
       tau: setting("tau", 0.5),
     },
+    flowse: { steps: setting("flowse-steps", 32), transcript },
     gpu: ($("gpu") as HTMLInputElement | null)?.checked ?? false,
     modelBase: MODEL_BASE,
+    localFiles: { ...localFiles },
     seed: (Math.random() * 2 ** 32) >>> 0,
   };
   worker.postMessage(req);

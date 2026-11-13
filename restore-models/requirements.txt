@@ -14,3 +14,10 @@ pandas==3.1.1
 matplotlib==3.11.2
 tqdm==4.70.1
 tabulate==0.10.0
+# FlowSE (versions as its requirement.txt pins them, where they install on current Python)
+x-transformers==1.43.2
+torchdiffeq==0.2.5
+einops==0.8.0
+vocos==0.1.0
+encodec==0.1.1
+pyyaml==6.0.3

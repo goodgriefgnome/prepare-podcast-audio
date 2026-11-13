@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: restore-models/out
-          key: restore-models-${{ hashFiles('restore-models/**') }}
+          key: restore-models-${{ hashFiles('restore-models/build.sh', 'restore-models/export_re.py', 'restore-models/load_re.py', 'restore-models/fp16.py', 'restore-models/index.py', 'restore-models/requirements.txt', 'restore-models/LICENSES.md') }}
       - if: steps.models.outputs.cache-hit != 'true'
         uses: actions/setup-python@v5
         with:

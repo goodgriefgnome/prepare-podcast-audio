@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Speech Restoration Lab</title>
-    <meta name="description" content="Compare generative speech restoration (Resemble Enhance) with the app's noise reduction on your own recordings. Runs on your device." />
+    <meta name="description" content="Compare generative speech restoration (Resemble Enhance, Sidon, PASE, FlowSE) with the app's noise reduction on your own recordings. Runs on your device." />
     <meta name="theme-color" content="#f3f5f4" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0f1513" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
@@ -52,6 +52,27 @@
               </div>
             </div>
 
+            <div class="group">
+              <span class="label">Models from files on your disk</span>
+              <span class="hint">These models know how speech sounds phoneme by phoneme. They’re too big to download here: get the files from the <a href="https://github.com/goodgriefgnome/prepare-podcast-audio/releases/tag/restore-models-v1">model release</a>, then choose them below (all at once is fine). They’re read from your disk and never uploaded.</span>
+              <label class="btn pick">Choose model files<input id="model-files" type="file" accept=".onnx,.txt" multiple hidden /></label>
+              <div class="toggles">
+                <label class="toggle"><span>Sidon</span><input type="checkbox" id="m-sidon" disabled /><small>Cleans w2v-BERT 2.0 speech features (multilingual), then a vocoder. 503 MB. <span class="need" data-for="sidon"></span></small></label>
+                <label class="toggle"><span>PASE</span><input type="checkbox" id="m-pase" disabled /><small>Denoised WavLM features (phonetic and acoustic layers), then a vocoder. 16 kHz. 769 MB. <span class="need" data-for="pase"></span></small></label>
+                <label class="toggle"><span>FlowSE</span><input type="checkbox" id="m-flowse" disabled /><small>Flow matching on mel spectrograms. Trained on Mandarin. 24 kHz, and slow. 720 MB. <span class="need" data-for="flowse"></span></small></label>
+                <label class="toggle"><span>FlowSE with transcript</span><input type="checkbox" id="m-flowse_text" disabled /><small>The same, also given what’s said (below). Excerpts of 30 s or less. <span class="need" data-for="flowse_text"></span></small></label>
+              </div>
+            </div>
+
+            <details class="group" id="flowse-settings">
+              <summary class="label">FlowSE settings</summary>
+              <div class="row"><label for="flowse-steps">Steps (quality vs. speed)</label>
+                <select id="flowse-steps" class="field"><option value="8">8 (fast)</option><option value="16">16</option><option value="32" selected>32 (default)</option></select></div>
+              <label class="label" for="transcript">Transcript of the excerpt</label>
+              <textarea id="transcript" class="field" rows="4" placeholder="Exactly what’s said in the excerpt"></textarea>
+              <span class="hint">FlowSE’s vocabulary is pinyin plus letters and punctuation, used character by character, so English text is passed as letters.</span>
+            </details>
+
             <details class="group" id="re-settings">
               <summary class="label">Resemble Enhance settings</summary>
               <div class="row"><label for="nfe">Steps (quality vs. speed)</label>
@@ -92,6 +113,9 @@
 
       <p class="foot">
         Models: <a href="https://github.com/resemble-ai/resemble-enhance">Resemble Enhance</a> (Resemble AI, MIT) ·
+        <a href="https://github.com/sarulab-speech/Sidon">Sidon</a> (SARU Lab, MIT) ·
+        <a href="https://github.com/cisco-open/pase">PASE</a> (Cisco, Apache-2.0) ·
+        <a href="https://github.com/Honee-W/FlowSE">FlowSE</a> (weights Apache-2.0) with <a href="https://github.com/gemelo-ai/vocos">Vocos</a> (MIT) ·
         <a href="https://github.com/xiph/rnnoise">RNNoise</a> (Xiph, BSD). Converted to ONNX and run with ONNX Runtime Web.
         <a href="./">Back to Prepare Podcast Audio</a>
       </p>

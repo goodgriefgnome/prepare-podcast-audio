@@ -22,3 +22,7 @@ details.group .row label { font-size: 13.5px }
 .vbar { position: absolute; left: 0; right: 0; bottom: -1px; height: 3px }
 .vbar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s }
 #player { margin-top: 16px }
+textarea.field { width: 100%; box-sizing: border-box; resize: vertical; line-height: 1.4 }
+.need { display: block; margin-top: 2px }
+.need:empty { display: none }
+.hint a { color: inherit }
