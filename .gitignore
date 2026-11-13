@@ -4,3 +4,4 @@ dist
 test/fixtures/generated
 public/models
 restore-models/out
+__pycache__/
