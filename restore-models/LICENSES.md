@@ -3,9 +3,6 @@
 These ONNX files are conversions of published models. The weights are unchanged
 apart from being stored as 16-bit floats.
 
-- **Sidon v0.1**: Wataru Nakata, Yuki Saito (SARU Lab), https://github.com/sarulab-speech/Sidon (MIT).
-  Weights: https://huggingface.co/sarulab-speech/sidon-v0.1 (MIT), fine-tuned from
-  w2v-BERT 2.0 (Meta, MIT).
 - **PASE**: Cisco Systems, https://github.com/cisco-open/pase (Apache-2.0; it includes
   WavLM, Microsoft, MIT, and Vocos/WavTokenizer code, MIT).
   Weights: https://huggingface.co/cisco-ai/pase (Apache-2.0).

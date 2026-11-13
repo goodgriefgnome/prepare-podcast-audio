@@ -2,7 +2,6 @@ Model files for the [Speech Restoration Lab](https://goodgriefgnome.github.io/pr
 
 | Model | Files | Size |
 |---|---|---|
-| Sidon | `sidon_predictor.f16.onnx`, `sidon_vocoder.f16.onnx` | 503 MB |
 | PASE | `pase_encoder.f16.onnx`, `pase_vocoder.f16.onnx` | 769 MB |
 | FlowSE | `flowse_mel.onnx`, `flowse_velocity.f16.onnx`, `flowse_vocoder.f16.onnx`, plus `flowse_vocab.txt` to use a transcript | 720 MB |
 

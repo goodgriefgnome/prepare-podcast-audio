@@ -3,7 +3,7 @@
  * Runs speech restoration models on an excerpt, for the comparison page.
  *
  * Models (ONNX, exported by restore-models/export_*.py, read from files the
- * person picks): Sidon, PASE and FlowSE. Plus the app's own noise reduction
+ * person picks): PASE and FlowSE. Plus the app's own noise reduction
  * (RNNoise) as the baseline.
  *
  * Big sessions are created one stage at a time and released straight after,
@@ -15,9 +15,8 @@ import { Resampler } from "../dsp/resampler.ts";
 import { openAudio } from "../io/mp3.ts";
 import { rnnoiseFactory } from "../pipeline/denoise.ts";
 import { runBlock, WORK_RATE } from "../pipeline/frontend.ts";
-import { w2vBertFeatures } from "./w2vbert.ts";
 
-export type Method = "rnnoise" | "sidon" | "pase" | "flowse" | "flowse_text";
+export type Method = "rnnoise" | "pase" | "flowse" | "flowse_text";
 /** Versions shown on the page: the input and each method. */
 export type VersionKey = Method | "original";
 
@@ -216,66 +215,6 @@ function windows(x: Float32Array, rate: number, seconds: number, overlap: number
   return { segs, join: (ys: Float32Array[]) => crossfadeJoin(ys.map((y, i) => fit(y, segs[i].length)), HOP, OV, x.length) };
 }
 
-/** torchaudio.functional.highpass_biquad (Q = 0.707), output clamped to ±1 as torchaudio's lfilter does. */
-function highpass(x: Float32Array, rate: number, cutoff: number): Float32Array {
-  const w0 = (2 * Math.PI * cutoff) / rate, alpha = Math.sin(w0) / (2 * 0.707), c = Math.cos(w0);
-  const a0 = 1 + alpha;
-  const b0 = (1 + c) / 2 / a0, b1 = -(1 + c) / a0, b2 = b0, a1 = (-2 * c) / a0, a2 = (1 - alpha) / a0;
-  const y = new Float32Array(x.length);
-  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-  for (let i = 0; i < x.length; i++) {
-    const v = b0 * x[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-    x2 = x1; x1 = x[i]; y2 = y1; y1 = v;
-    y[i] = Math.max(-1, Math.min(1, v));
-  }
-  return y;
-}
-
-/**
- * Sidon v0.1, following its official demo: peak-normalise to 0.9, high-pass at
- * 50 Hz, 16 kHz, w2v-BERT features, cleansed by the fine-tuned w2v-BERT
- * predictor, then the vocoder (48 kHz). The demo runs 96 s chunks; here 30 s
- * windows are crossfaded, to keep the attention within WebAssembly's memory.
- */
-async function runSidon(req: RestoreRequest, x: Float32Array): Promise<Float32Array> {
-  const say = (text: string, f: number) => post({ type: "status", method: "sidon", text, fraction: f });
-  let peak = 1e-9;
-  for (const v of x) peak = Math.max(peak, Math.abs(v));
-  const scaled = new Float32Array(x.length);
-  for (let i = 0; i < x.length; i++) scaled[i] = (0.9 * x[i]) / peak;
-  const x16 = resample(highpass(scaled, SR, 50), SR, 16000);
-  const { segs, join } = windows(x16, 16000, 30, 1);
-  const feats: { data: Float32Array; frames: number }[] = [];
-  let s = await session(req, "sidon", "sidon_predictor.f16.onnx", "Sidon, part 1 of 2 (398 MB)", req.gpu);
-  try {
-    for (let i = 0; i < segs.length; i++) {
-      say(`Cleaning the speech features: ${i + 1} of ${segs.length}…`, (i / segs.length) * 0.5);
-      const padded = new Float32Array(segs[i].length + 320);
-      padded.set(segs[i], 160);
-      const f = w2vBertFeatures(padded);
-      const o = await s.run({ input_features: tensor(f.data, [1, f.frames, 160]) });
-      feats.push({ data: (o.features.data as Float32Array).slice(), frames: o.features.dims[1] });
-      o.features.dispose();
-    }
-  } finally {
-    await s.release();
-  }
-  s = await session(req, "sidon", "sidon_vocoder.f16.onnx", "Sidon, part 2 of 2 (105 MB)", req.gpu);
-  const ys: Float32Array[] = [];
-  try {
-    for (let i = 0; i < feats.length; i++) {
-      say(`Synthesising audio: ${i + 1} of ${feats.length}…`, 0.5 + (i / feats.length) * 0.5);
-      const o = await s.run({ features: tensor(feats[i].data, [1, feats[i].frames, 1024]) });
-      // 48 kHz; back to 16 kHz to crossfade at the windows' own rate.
-      ys.push(resample(o.audio.data as Float32Array, 48000, 16000));
-      o.audio.dispose();
-    }
-  } finally {
-    await s.release();
-  }
-  return resample(join(ys), 16000, SR);
-}
-
 /** PASE's padding: to 320k + 80 samples (trimming if that's shorter). */
 const paseLength = (n: number) => (n % 320 === 80 ? n : Math.floor(n / 320) * 320 + 80);
 
@@ -436,7 +375,6 @@ if (self.name !== "em-pthread") self.onmessage = async (e: MessageEvent<RestoreR
     try {
       const y =
         m === "rnnoise" ? await runRnnoise(x)
-        : m === "sidon" ? await runSidon(req, x)
         : m === "pase" ? await runPase(req, x)
         : await runFlowse(req, m, x);
       post({ type: "status", method: m, text: `Done in ${((performance.now() - t0) / 1000).toFixed(0)} s`, fraction: 1 });

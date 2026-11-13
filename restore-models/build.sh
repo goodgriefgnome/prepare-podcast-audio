@@ -2,10 +2,9 @@
 # Converts speech restoration models to the ONNX files the restoration lab
 # (restore.html) loads.
 #
-# usage: restore-models/build.sh <out-dir> [model ...]   (default: all three)
+# usage: restore-models/build.sh <out-dir> [model ...]   (default: both)
 #
 # Models:
-#   sidon     Sidon v0.1. Downloads 1.0 GB, writes 503 MB.
 #   pase      PASE. Downloads 1.5 GB, writes 769 MB.
 #   flowse    FlowSE, with the Vocos vocoder. Downloads 4.1 GB, writes 720 MB.
 #
@@ -16,7 +15,6 @@
 # Each model's downloads are deleted once it's converted, to save disk space.
 set -euo pipefail
 
-SIDON_HF=https://huggingface.co/sarulab-speech/sidon-v0.1/resolve/b3b02d8bbd55fdbc410e6e46e76ef95ace4fbf52
 PASE_REPO=https://github.com/cisco-open/pase
 PASE_COMMIT=45614efae73dc49bf36018d1ca6a9319b3050038
 PASE_HF=https://huggingface.co/cisco-ai/pase/resolve/31b1cf14f41d4d7a1a469eaa45ce235825d900f0
@@ -28,7 +26,7 @@ VOCOS_HF=https://huggingface.co/charactr/vocos-mel-24khz/resolve/0feb3fdd929bcd6
 here=$(cd "$(dirname "$0")" && pwd)
 out=$(realpath -m "$1")
 shift
-models=(sidon pase flowse)
+models=(pase flowse)
 [ $# -eq 0 ] || models=("$@")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -48,14 +46,6 @@ clone() { # repo commit dest
 files=()
 for model in "${models[@]}"; do
   case "$model" in
-    sidon)
-      echo "== Sidon"
-      fetch "$SIDON_HF/feature_extractor_cpu.pt" "$work/sidon/feature_extractor_cpu.pt" fd9abc906a9048b3c047bd3d246a25f6485d09c2d6bb85e098f527f844efc019
-      fetch "$SIDON_HF/decoder_cpu.pt" "$work/sidon/decoder_cpu.pt" 34dcc80fab75bd1336369ba5b2063f6da475887aa824db94b495c4059c5fdea4
-      python "$here/export_sidon.py" "$work/sidon" "$work/onnx"
-      rm -rf "$work/sidon"
-      files+=(sidon_predictor sidon_vocoder)
-      ;;
     pase)
       echo "== PASE"
       clone "$PASE_REPO" "$PASE_COMMIT" "$work/pase-src"
