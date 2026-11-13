@@ -13,11 +13,9 @@ const MODEL_BASE = new URL(new URLSearchParams(location.search).get("models") ??
 const LABELS: Record<VersionKey, string> = {
   original: "Original",
   rnnoise: "App’s noise reduction",
-  voicefixer: "VoiceFixer",
-  vftone: "VoiceFixer, tone-matched",
   resemble: "Resemble Enhance",
 };
-const ORDER: VersionKey[] = ["original", "rnnoise", "voicefixer", "vftone", "resemble"];
+const ORDER: VersionKey[] = ["original", "rnnoise", "resemble"];
 
 function clock(s: number): string {
   s = Math.max(0, Math.floor(s));
@@ -83,7 +81,7 @@ function resetVersions(methods: Method[]) {
   const audio = $<HTMLAudioElement>("audio");
   audio.pause();
   audio.removeAttribute("src");
-  for (const key of ORDER.filter((k) => k === "original" || methods.includes((k === "vftone" ? "voicefixer" : k) as Method))) {
+  for (const key of ORDER.filter((k) => k === "original" || methods.includes(k as Method))) {
     const row = document.createElement("li");
     row.className = "version";
     row.innerHTML = `<button class="pick-version" type="button" disabled><span class="key num"></span><span class="name"></span></button>
@@ -188,7 +186,7 @@ $("run").addEventListener("click", () => {
   if (!Number.isFinite(start)) start = 0;
   const length = Number($<HTMLSelectElement>("length").value);
   if (duration && start >= duration - 1) start = Math.max(0, duration - length);
-  const methods = (["rnnoise", "voicefixer", "resemble"] as Method[]).filter((m) => ($(`m-${m}`) as HTMLInputElement | null)?.checked);
+  const methods = (["rnnoise", "resemble"] as Method[]).filter((m) => ($(`m-${m}`) as HTMLInputElement | null)?.checked);
   resetVersions(methods);
   worker?.terminate();
   worker = new Worker(new URL("./restore-worker.ts", import.meta.url), { type: "module" });
@@ -237,6 +235,7 @@ $("run").addEventListener("click", () => {
       lambd: setting("lambd", 0.5),
       tau: setting("tau", 0.5),
     },
+    gpu: ($("gpu") as HTMLInputElement | null)?.checked ?? false,
     modelBase: MODEL_BASE,
     seed: (Math.random() * 2 ** 32) >>> 0,
   };

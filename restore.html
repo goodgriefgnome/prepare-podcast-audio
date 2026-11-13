@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Speech Restoration Lab</title>
-    <meta name="description" content="Compare generative speech restoration (VoiceFixer) with the app's noise reduction on your own recordings. Runs on your device." />
+    <meta name="description" content="Compare generative speech restoration (Resemble Enhance) with the app's noise reduction on your own recordings. Runs on your device." />
     <meta name="theme-color" content="#f3f5f4" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0f1513" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
@@ -41,16 +41,28 @@
                   <option value="120">2 minutes</option>
                 </select>
               </div>
-              <span class="hint" id="start-hint">Generative models are slow, so they run on an excerpt. VoiceFixer works in 30 s pieces.</span>
+              <span class="hint" id="start-hint">Generative models are slow, so they run on an excerpt. On a desktop CPU, Resemble Enhance takes about 13 s per second of audio.</span>
             </div>
 
             <div class="group">
               <span class="label">Models</span>
               <div class="toggles">
                 <label class="toggle"><span>App’s noise reduction</span><input type="checkbox" id="m-rnnoise" checked /><small>RNNoise with the app’s 18 dB limit. No download.</small></label>
-                <label class="toggle"><span>VoiceFixer</span><input type="checkbox" id="m-voicefixer" checked /><small>Restores a mel spectrogram, then a vocoder re-synthesises the voice. 216 MB download.</small></label>
+                <label class="toggle"><span>Resemble Enhance</span><input type="checkbox" id="m-resemble" checked /><small>Denoiser, then flow matching generates the voice’s features from the recording, then a vocoder. 730 MB download.</small></label>
               </div>
             </div>
+
+            <details class="group" id="re-settings">
+              <summary class="label">Resemble Enhance settings</summary>
+              <div class="row"><label for="nfe">Steps (quality vs. speed)</label>
+                <select id="nfe" class="field"><option value="16">8 (fast)</option><option value="32" selected>16 (default)</option><option value="64">32 (best)</option></select></div>
+              <div class="row"><label for="lambd">Denoise first</label><span class="num hint" id="lambd-val"></span></div>
+              <input class="level" type="range" id="lambd" min="0" max="1" step="0.1" value="0.5" />
+              <div class="row"><label for="tau">Prior temperature</label><span class="num hint" id="tau-val"></span></div>
+              <input class="level" type="range" id="tau" min="0" max="1" step="0.1" value="0.5" />
+              <span class="hint">Lower temperature keeps closer to the recording; higher lets the model invent more. The defaults are the model’s own.</span>
+              <label class="toggle"><span>Use the GPU</span><input type="checkbox" id="gpu" /><small>Much faster where WebGPU is available, but unverified: check it against a CPU run.</small></label>
+            </details>
 
           </div>
           <div class="go-wrap">
@@ -79,7 +91,7 @@
       </div>
 
       <p class="foot">
-        Models: <a href="https://github.com/haoheliu/voicefixer">VoiceFixer</a> (Haohe Liu et al., weights CC BY 4.0) ·
+        Models: <a href="https://github.com/resemble-ai/resemble-enhance">Resemble Enhance</a> (Resemble AI, MIT) ·
         <a href="https://github.com/xiph/rnnoise">RNNoise</a> (Xiph, BSD). Converted to ONNX and run with ONNX Runtime Web.
         <a href="./">Back to Prepare Podcast Audio</a>
       </p>

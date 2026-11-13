@@ -1,13 +1,11 @@
 #!/bin/bash
-# Converts speech restoration models to the ONNX files the restoration lab
+# Converts speech restoration models (Resemble Enhance) to the ONNX files the restoration lab
 # (restore.html) loads, split into parts under 100 MB, with an index.json the
 # page reads.
 #
-# usage: restore-models/build.sh <out-dir> [voicefixer] [resemble]
-#   (default: voicefixer, which is all the page offers for now)
+# usage: restore-models/build.sh <out-dir> [resemble]
 #
 # Needs Python with requirements.txt installed, git, curl and sha256sum.
-# VoiceFixer: downloads 625 MB (Zenodo), writes 216 MB.
 # Resemble Enhance: downloads 713 MB (Hugging Face), writes 730 MB.
 set -euo pipefail
 
@@ -19,7 +17,7 @@ PART_SIZE=95000000
 here=$(cd "$(dirname "$0")" && pwd)
 out=$(realpath -m "$1")
 shift
-models=("${@:-voicefixer}")
+models=("${@:-resemble}")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$out" "$work/onnx"
@@ -33,18 +31,6 @@ fetch() { # url dest sha256
 files=()
 for model in "${models[@]}"; do
   case "$model" in
-    voicefixer)
-      echo "== VoiceFixer"
-      # VoiceFixer reads its checkpoints from ~/.cache/voicefixer, so give it a home of its own.
-      vfhome="$work/home/.cache/voicefixer"
-      fetch "https://zenodo.org/records/5600188/files/vf.ckpt?download=1" "$vfhome/analysis_module/checkpoints/vf.ckpt" 748411b70089cadf34a6c11054f95f3a454e614af562c23b13a82f6cb413109f
-      fetch "https://zenodo.org/records/5469951/files/model.ckpt-1490000_trimed.pt?download=1" "$vfhome/synthesis_module/44100/model.ckpt-1490000_trimed.pt" 9410d0b528c10a251ae947bd299d1939b0b3247df680c81c4164e94f5d87dc45
-      python -m pip download --quiet --no-deps -d "$work/pkg" voicefixer==0.1.3
-      echo "7ee61b71c25fbdf1ef4e5407fe870ec0b351f8a82765806a8b09c37eb3a1162d  $work/pkg/voicefixer-0.1.3-py3-none-any.whl" | sha256sum -c --quiet
-      python -m zipfile -e "$work/pkg/voicefixer-0.1.3-py3-none-any.whl" "$work/vfsrc"
-      HOME="$work/home" VF_SRC="$work/vfsrc" python "$here/export_vf.py" "$work/onnx"
-      files+=(vf)
-      ;;
     resemble)
       echo "== Resemble Enhance"
       git clone --quiet "$RESEMBLE_REPO" "$work/resemble-enhance"

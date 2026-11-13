@@ -3,7 +3,6 @@
  * Runs speech restoration models on an excerpt, for the comparison page.
  *
  * Models (ONNX, exported by restore/export_*.py):
- *  - VoiceFixer (Liu et al. 2022): one graph, 30 s segments.
  *  - Resemble Enhance (Resemble AI 2023), enhancer: front (mels, denoiser, latent),
  *    velocity (flow-matching ODE, run here), decode, vocoder (run on short windows).
  * Plus the app's own noise reduction (RNNoise) as the baseline.
@@ -17,11 +16,10 @@ import { Resampler } from "../dsp/resampler.ts";
 import { openAudio } from "../io/mp3.ts";
 import { rnnoiseFactory } from "../pipeline/denoise.ts";
 import { runBlock, WORK_RATE } from "../pipeline/frontend.ts";
-import { toneMatch } from "./tone.ts";
 
-export type Method = "rnnoise" | "voicefixer" | "resemble";
-/** Versions shown on the page: the input, each method, and VoiceFixer with the recording's tone put back. */
-export type VersionKey = Method | "original" | "vftone";
+export type Method = "rnnoise" | "resemble";
+/** Versions shown on the page: the input and each method. */
+export type VersionKey = Method | "original";
 
 export interface ResembleSettings {
   /** Velocity evaluations (midpoint solver: two per step). */
@@ -40,6 +38,8 @@ export type RestoreRequest = {
   length: number;
   methods: Method[];
   resemble: ResembleSettings;
+  /** Run Resemble Enhance on WebGPU (if available). Off by default: unverified, and another model (VoiceFixer) produced noise there. */
+  gpu: boolean;
   /** Where the .onnx files are (absolute URL, ending in /). */
   modelBase: string;
   seed: number;
@@ -57,7 +57,6 @@ const post = (r: RestoreResponse, transfer: Transferable[] = []) => self.postMes
 
 const SR = 44100;
 export const MODEL_FILES: Record<Exclude<Method, "rnnoise">, string[]> = {
-  voicefixer: ["vf.f16.onnx"],
   resemble: ["re_front.f16.onnx", "re_velocity.f16.onnx", "re_decode.f16.onnx", "re_vocoder.f16.onnx"],
 };
 
@@ -230,36 +229,11 @@ function loudness(x: Float32Array): number {
 
 // ------------------------------------------------------------------ methods
 
-async function runRnnoise(x: Float32Array, report: VersionKey = "rnnoise"): Promise<Float32Array> {
-  post({ type: "status", method: report, text: "Reducing noise…", fraction: 0 });
+async function runRnnoise(x: Float32Array): Promise<Float32Array> {
+  post({ type: "status", method: "rnnoise", text: "Reducing noise…", fraction: 0 });
   const r = await runBlock({ start: 0, end: null, from: 0, input: [x] }, { channels: 1, rumble: true, noise: true, inRate: SR }, rnnoiseFactory);
   const rs = new Resampler(WORK_RATE, SR, 1);
   return concat([rs.push(r.audio)[0], rs.flush()[0]]).subarray(0, x.length).slice();
-}
-
-async function runVoiceFixer(req: RestoreRequest, x: Float32Array): Promise<Float32Array> {
-  const SEG = 30 * SR, OV = SR, HOP = SEG - OV;
-  // ONNX Runtime's WebGPU backend computes VoiceFixer wrongly (the output is
-  // noise), so it always runs on the CPU, where it matches the original.
-  const s = await session(req, "voicefixer", "vf.f16.onnx", "VoiceFixer (216 MB)", false);
-  try {
-    const pieces: Float32Array[] = [];
-    const count = Math.max(1, Math.ceil((x.length - OV) / HOP));
-    for (let i = 0; i < count; i++) {
-      post({ type: "status", method: "voicefixer", text: `Restoring part ${i + 1} of ${count}…`, fraction: i / count });
-      const seg = new Float32Array(SEG);
-      seg.set(x.subarray(i * HOP, i * HOP + SEG));
-      const out = (await s.run({ wav: tensor(seg, [1, 1, SEG]) })).out;
-      const y = out.data as Float32Array;
-      // The output is a little longer than the input; VoiceFixer trims it centred.
-      const off = Math.floor((y.length - SEG) / 2);
-      pieces.push(y.slice(off, off + SEG));
-      out.dispose();
-    }
-    return crossfadeJoin(pieces, HOP, OV, x.length);
-  } finally {
-    await s.release();
-  }
 }
 
 /** Solves h(1/n) = 1/2 for Resemble's exponential time mapping h(t) = (aᵗ − 1)/(a − 1). */
@@ -291,7 +265,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
   const say = (text: string, f: number) => post({ type: "status", method: "resemble", text, fraction: f });
 
   // 1. Mels, denoiser and the starting latent.
-  let s = await session(req, "resemble", "re_front.f16.onnx", "Resemble Enhance, part 1 of 4 (143 MB)", true);
+  let s = await session(req, "resemble", "re_front.f16.onnx", "Resemble Enhance, part 1 of 4 (143 MB)", req.gpu);
   try {
     for (let i = 0; i < n; i++) {
       say(`Analysing ${i + 1} of ${n}…`, (i / n) * 0.05);
@@ -316,7 +290,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
   }
 
   // 2. The flow-matching ODE (midpoint method), from the noisy start to the restored latent.
-  s = await session(req, "resemble", "re_velocity.f16.onnx", "Resemble Enhance, part 2 of 4 (138 MB)", true);
+  s = await session(req, "resemble", "re_velocity.f16.onnx", "Resemble Enhance, part 2 of 4 (138 MB)", req.gpu);
   try {
     const steps = Math.max(1, Math.floor(nfe / 2));
     const ts = timeGrid(steps);
@@ -349,7 +323,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
   }
 
   // 3. Latent to vocoder features.
-  s = await session(req, "resemble", "re_decode.f16.onnx", "Resemble Enhance, part 3 of 4 (102 MB)", true);
+  s = await session(req, "resemble", "re_decode.f16.onnx", "Resemble Enhance, part 3 of 4 (102 MB)", req.gpu);
   try {
     for (const p of parts) {
       const o = await s.run({ psi1: tensor(p.psi!, [1, 64, p.F]) });
@@ -363,7 +337,7 @@ async function runResemble(req: RestoreRequest, x: Float32Array): Promise<Float3
 
   // 4. Vocoder, on windows of W frames with C frames of context each side;
   // neighbouring windows overlap by X frames and are crossfaded.
-  s = await session(req, "resemble", "re_vocoder.f16.onnx", "Resemble Enhance, part 4 of 4 (347 MB)", true);
+  s = await session(req, "resemble", "re_vocoder.f16.onnx", "Resemble Enhance, part 4 of 4 (347 MB)", req.gpu);
   const W = 300, C = 32, X = 8;
   try {
     const totalWin = parts.reduce((t, p) => t + Math.ceil(p.F / W), 0);
@@ -431,27 +405,12 @@ if (self.name !== "em-pthread") self.onmessage = async (e: MessageEvent<RestoreR
     post({ type: "result", method, audio: copy, seconds: copy.length / SR, lufs: loudness(copy) }, [copy.buffer]);
   };
   send("original", x);
-  let cleaned: Float32Array | null = null; // the app's noise reduction, the tone reference
   for (const m of req.methods) {
     const t0 = performance.now();
     try {
-      const y = m === "rnnoise" ? await runRnnoise(x) : m === "voicefixer" ? await runVoiceFixer(req, x) : await runResemble(req, x);
-      if (m === "rnnoise") cleaned = y;
+      const y = m === "rnnoise" ? await runRnnoise(x) : await runResemble(req, x);
       post({ type: "status", method: m, text: `Done in ${((performance.now() - t0) / 1000).toFixed(0)} s`, fraction: 1 });
       send(m, y);
-      if (m === "voicefixer") {
-        // VoiceFixer comes out thin; match its spectral balance to the
-        // noise-reduced recording (see tone.ts).
-        try {
-          cleaned ??= await runRnnoise(x, "vftone");
-          post({ type: "status", method: "vftone", text: "Matching tone…", fraction: 0.5 });
-          const z = toneMatch(y, cleaned, SR);
-          post({ type: "status", method: "vftone", text: "VoiceFixer, EQ’d to the recording’s own tone", fraction: 1 });
-          send("vftone", z);
-        } catch (err) {
-          post({ type: "error", method: "vftone", message: err instanceof Error ? err.message : String(err) });
-        }
-      }
     } catch (err) {
       console.error(err);
       post({ type: "error", method: m, message: err instanceof Error ? err.message : String(err) });

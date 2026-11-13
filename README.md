@@ -66,26 +66,25 @@ Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo), up to o
 |---|---|
 | Original | The excerpt, mixed to mono at 44.1 kHz |
 | App’s noise reduction | RNNoise with the app’s 18 dB limit (the baseline) |
-| [VoiceFixer](https://github.com/haoheliu/voicefixer) | Restores a mel spectrogram (ResUNet), then a 44.1 kHz vocoder re-synthesises the voice. Mode 0 (the default). |
-
-| VoiceFixer, tone-matched | VoiceFixer comes out thin (about 3 dB less at 100–200 Hz and 2–4 dB more from 1.6 to 12.8 kHz than clean speech). This version gets a smooth linear-phase EQ (third-octave resolution, at most ±9 dB, flat below 150 Hz) that matches its long-term spectrum to the noise-reduced recording's, so the speaker's own tone comes back (`src/restore/tone.ts`). |
+| [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) | The enhancer: a denoiser, then latent conditional flow matching generates the voice's features from the recording, then a UnivNet vocoder. Steps, denoise strength (λ) and prior temperature (τ) can be set; the defaults are the model's own (16 midpoint steps, 0.5, 0.5). |
 
 All versions can be loudness-matched to −16 LUFS for a fair comparison, and switched while playing.
 
-[Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) (its enhancer: a denoiser, then latent conditional flow matching, then a UnivNet vocoder) is converted and supported by the code, but not offered on the page for now: its models are 730 MB, more than GitHub Pages should host. `restore-models/build.sh <dir> resemble` builds them; to try it, host them somewhere that allows cross-origin downloads, open the page with `?models=<url>`, and put its toggle back in `restore.html`.
+Tried and dropped:
 
-[SelfRemaster](https://github.com/Takaaki-Saeki/ssl_speech_restoration_v2) isn't included: it has no general-purpose model. It learns from the degraded recordings themselves, so it would need training (on a GPU, with hours of audio) for each recording setup.
+- **VoiceFixer** (Liu et al., 2022) came out thin and, worse, removed unvoiced consonants (for example the "ch" at the end of "church"): it regenerates speech from a predicted clean spectrogram, and noise-like consonants get treated as noise. Its output was also noise on ONNX Runtime's WebGPU backend.
+- **SelfRemaster** has no general-purpose model. It learns from the degraded recordings themselves, so it would need training (on a GPU, with hours of audio) for each recording setup.
 
-**How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). VoiceFixer always runs on the CPU: on ONNX Runtime's WebGPU backend its output is noise. Resemble Enhance is set to use WebGPU when the browser has it, but that hasn't been checked on a real GPU. The conversion keeps the models' maths but changes how some parts are expressed so they run in a browser:
+**How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). WebGPU is an opt-in setting, as it hasn't been checked against the CPU on a real GPU. The conversion keeps the model's maths but changes how some parts are expressed so they run in a browser:
 
 - STFTs and inverse STFTs are written as convolutions (matches the originals to 1e-8).
-- Resemble Enhance's flow-matching ODE loop, noise and chunking run in JavaScript; its location-variable convolutions are rewritten as matrix multiplies (identical results), and its vocoder runs on 3 s windows with 0.3 s of context each side, because its intermediate tensors don't fit in WebAssembly's 4 GB for longer pieces.
-- Weights are stored as 16-bit floats and computed in 32-bit (VoiceFixer's output changes by 0.04 dB on average; Resemble Enhance's flow model is unchanged).
-- Long excerpts are processed in 30 s pieces with 1 s crossfades (both models' own segment length).
+- The flow-matching ODE loop (midpoint method), noise and chunking run in JavaScript; the vocoder's location-variable convolutions are rewritten as matrix multiplies (identical results), and the vocoder runs on 3 s windows with 0.3 s of context each side, because its intermediate tensors don't fit in WebAssembly's 4 GB for longer pieces.
+- Weights are stored as 16-bit floats and computed in 32-bit (the flow model is unchanged; it was evidently trained in 16-bit).
+- Long excerpts are processed in 30 s pieces with 1 s crossfades, as the original does.
 
-**Speed** (desktop, CPU, 4 threads, per second of audio): VoiceFixer about 1.8 s; Resemble Enhance about 13 s with default settings. WebGPU should be much faster.
+**Speed** (desktop, CPU, 4 threads): about 13 s per second of audio with default settings.
 
-**Downloads:** VoiceFixer is 216 MB, fetched on first use and kept in the browser's cache. Models are split into parts under 100 MB with an `index.json` (size and SHA-256 per model). The page looks for them in `models/` next to it, or wherever `?models=<url>` points. The deploy workflow builds VoiceFixer with `restore-models/build.sh` (cached until `restore-models/` changes) and publishes it with the site.
+**Downloads:** 730 MB, fetched on first use and kept in the browser's cache. Models are split into parts under 100 MB with an `index.json` (size and SHA-256 per model). The page looks for them in `models/` next to it, or wherever `?models=<url>` points. The deploy workflow builds them with `restore-models/build.sh` (cached until `restore-models/` changes) and publishes them with the site.
 
 ## Development
 
@@ -129,6 +128,6 @@ The app ships a WebAssembly build of [RNNoise](https://github.com/xiph/rnnoise) 
 - `src/pipeline/denoise.ts` — loads RNNoise
 - `rnnoise/build.sh` — builds RNNoise
 - `restore.html`, `src/restore/` — the Speech Restoration Lab
-- `restore-models/` — converts VoiceFixer and Resemble Enhance to ONNX for the lab
+- `restore-models/` — converts Resemble Enhance to ONNX for the lab
 - `src/dsp/` — filters, BS.1770 loudness, resampler, true-peak meter and limiter
 - `src/io/` — WAV and MP3 readers, OPFS storage
