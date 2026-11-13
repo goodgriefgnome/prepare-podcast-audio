@@ -48,3 +48,7 @@ jobs:
             gh release edit "$tag" --notes-file restore-models/RELEASE.md
           fi
           gh release upload "$tag" "$RUNNER_TEMP"/models/* --clobber
+          # Remove files of models that are no longer built.
+          gh release view "$tag" --json assets --jq '.assets[].name' | while read -r name; do
+            [ -e "$RUNNER_TEMP/models/$name" ] || gh release delete-asset "$tag" "$name" --yes
+          done
