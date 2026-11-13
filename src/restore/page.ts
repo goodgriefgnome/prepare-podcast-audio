@@ -4,6 +4,7 @@ import { openAudio } from "../io/mp3.ts";
 import type { Method, RestoreRequest, RestoreResponse, VersionKey } from "./restore-worker.ts";
 // Only the constant: importing it from the worker module would bundle the worker into the page.
 const MODEL_FILES: Record<Exclude<Method, "rnnoise">, string[]> = {
+  clearvoice: ["mossformer2_se_48k.f16.onnx"],
   pase: ["pase_encoder.f16.onnx", "pase_vocoder.f16.onnx"],
   flowse: ["flowse_mel.onnx", "flowse_velocity.f16.onnx", "flowse_vocoder.f16.onnx"],
   flowse_text: ["flowse_mel.onnx", "flowse_velocity.f16.onnx", "flowse_vocoder.f16.onnx", "flowse_vocab.txt"],
@@ -16,11 +17,12 @@ const TARGET = -16;
 const LABELS: Record<VersionKey, string> = {
   original: "Original",
   rnnoise: "App’s noise reduction",
+  clearvoice: "ClearerVoice (MossFormer2)",
   pase: "PASE",
   flowse: "FlowSE",
   flowse_text: "FlowSE with transcript",
 };
-const METHODS: Method[] = ["rnnoise", "pase", "flowse", "flowse_text"];
+const METHODS: Method[] = ["rnnoise", "clearvoice", "pase", "flowse", "flowse_text"];
 const ORDER: VersionKey[] = ["original", ...METHODS];
 /** Models that run from files the person picks. */
 const LOCAL = METHODS.filter((m): m is Exclude<Method, "rnnoise"> => m !== "rnnoise");

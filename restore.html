@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Speech Restoration Lab</title>
-    <meta name="description" content="Compare generative speech restoration (PASE, FlowSE) with the app's noise reduction on your own recordings. Runs on your device." />
+    <meta name="description" content="Compare generative speech restoration (ClearerVoice, PASE, FlowSE) with the app's noise reduction on your own recordings. Runs on your device." />
     <meta name="theme-color" content="#f3f5f4" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0f1513" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
@@ -53,9 +53,10 @@
 
             <div class="group">
               <span class="label">Models from files on your disk</span>
-              <span class="hint">These models know how speech sounds phoneme by phoneme. They’re too big to download here: get the files from the <a href="https://github.com/goodgriefgnome/prepare-podcast-audio/releases/tag/restore-models-v1">model release</a>, then choose them below (all at once is fine). They’re read from your disk and never uploaded.</span>
+              <span class="hint">These are too big to download here: get the files from the <a href="https://github.com/goodgriefgnome/prepare-podcast-audio/releases/tag/restore-models-v1">model release</a>, then choose them below (all at once is fine). They’re read from your disk and never uploaded.</span>
               <label class="btn pick">Choose model files<input id="model-files" type="file" accept=".onnx,.txt" multiple hidden /></label>
               <div class="toggles">
+                <label class="toggle"><span>ClearerVoice (MossFormer2)</span><input type="checkbox" id="m-clearvoice" disabled /><small>Alibaba’s 48 kHz enhancer. Sets a gain for each of 961 frequency bins every 8 ms on the recording itself, so it can’t swap sounds, only turn them down. Fast. 163 MB. <span class="need" data-for="clearvoice"></span></small></label>
                 <label class="toggle"><span>PASE</span><input type="checkbox" id="m-pase" disabled /><small>Denoised WavLM features (phonetic and acoustic layers), then a vocoder. 16 kHz. 769 MB. <span class="need" data-for="pase"></span></small></label>
                 <label class="toggle"><span>FlowSE</span><input type="checkbox" id="m-flowse" disabled /><small>Flow matching on mel spectrograms. Trained on Mandarin. 24 kHz, and slow. 720 MB. <span class="need" data-for="flowse"></span></small></label>
                 <label class="toggle"><span>FlowSE with transcript</span><input type="checkbox" id="m-flowse_text" disabled /><small>The same, also given what’s said (below). Excerpts of 30 s or less. <span class="need" data-for="flowse_text"></span></small></label>
@@ -102,7 +103,8 @@
       </div>
 
       <p class="foot">
-        Models: <a href="https://github.com/cisco-open/pase">PASE</a> (Cisco, Apache-2.0) ·
+        Models: <a href="https://github.com/modelscope/ClearerVoice-Studio">ClearerVoice</a> (Alibaba, Apache-2.0) ·
+        <a href="https://github.com/cisco-open/pase">PASE</a> (Cisco, Apache-2.0) ·
         <a href="https://github.com/Honee-W/FlowSE">FlowSE</a> (weights Apache-2.0) with <a href="https://github.com/gemelo-ai/vocos">Vocos</a> (MIT) ·
         <a href="https://github.com/xiph/rnnoise">RNNoise</a> (Xiph, BSD). Converted to ONNX and run with ONNX Runtime Web.
         <a href="./">Back to Prepare Podcast Audio</a>

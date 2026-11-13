@@ -66,6 +66,7 @@ Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo), up to o
 |---|---|
 | Original | The excerpt, mixed to mono at 44.1 kHz |
 | App’s noise reduction | RNNoise with the app’s 18 dB limit (the baseline) |
+| [ClearerVoice](https://github.com/modelscope/ClearerVoice-Studio) MossFormer2_SE_48K | Alibaba's 48 kHz enhancer. A MossFormer2 network sets a gain for each of 961 frequency bins every 8 ms from Kaldi filterbank features, and the gains are applied to the recording's own spectrum: nothing is resynthesised, so it can only turn sounds down, not replace them. Runs as ClearerVoice does for long audio: 4 s windows, 3 s apart. Its default dither (random noise of about one 16-bit step) is off. |
 | [PASE](https://github.com/cisco-open/pase) | A denoised WavLM (DeWavLM) gives phonetic (layer 24) and acoustic (layer 1) features, and a dual-stream vocoder resynthesises 16 kHz speech. Designed to avoid the phoneme hallucinations of generative enhancement. |
 | [FlowSE](https://github.com/Honee-W/FlowSE) | Conditional flow matching on mel spectrograms, then the Vocos vocoder (24 kHz). Optionally conditioned on a typed transcript. Trained on Mandarin (WenetSpeech4TTS). 8, 16 or 32 Euler steps (32 is its default). |
 
@@ -80,13 +81,13 @@ Tried and dropped:
 
 **How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). WebGPU is an opt-in setting, as it hasn't been checked against the CPU on a real GPU.
 
-They're about 0.7 GB each, so they aren't hosted with the page: the `Restoration lab models` workflow builds them and attaches them to the [restore-models-v1 release](https://github.com/goodgriefgnome/prepare-podcast-audio/releases/tag/restore-models-v1). You download the files and pick them in the page, which reads them from disk.
+They're 0.16–0.8 GB each, so they aren't hosted with the page: the `Restoration lab models` workflow builds them and attaches them to the [restore-models-v1 release](https://github.com/goodgriefgnome/prepare-podcast-audio/releases/tag/restore-models-v1). You download the files and pick them in the page, which reads them from disk.
 
-- Each conversion is checked in the build against the original model's output (relative error below 1e-3). Weights are stored as 16-bit floats and computed in 32-bit; that moves the log-mel spectrum by 0.04 dB for PASE and 0.4 dB after FlowSE's 32 steps.
-- STFTs and inverse STFTs are written as convolutions; FlowSE's ODE loop and all resampling run in JavaScript.
+- Each conversion is checked in the build against the original model's output (relative error below 1e-3). Weights are stored as 16-bit floats and computed in 32-bit; that moves the log-mel spectrum by 0.04 dB for PASE (ClearerVoice's output by 1e-4; its signal-processing parts stay 32-bit) and 0.4 dB after FlowSE's 32 steps.
+- STFTs and inverse STFTs are written as convolutions; ClearerVoice's filterbank is folded into one convolution; FlowSE's ODE loop, the windowing and all resampling run in JavaScript.
 - Excerpts are processed in 30 s windows with 1 s crossfades, to keep attention within WebAssembly's memory.
 
-**Speed** (CPU, 3 threads, per second of audio): PASE about 1 s, FlowSE about 9 s at 8 steps (scaling with steps).
+**Speed** (CPU, 3 threads, per second of audio): ClearerVoice about 1 s (in the browser, loading included), PASE about 1 s, FlowSE about 9 s at 8 steps (scaling with steps).
 
 ## Development
 
@@ -130,6 +131,6 @@ The app ships a WebAssembly build of [RNNoise](https://github.com/xiph/rnnoise) 
 - `src/pipeline/denoise.ts` — loads RNNoise
 - `rnnoise/build.sh` — builds RNNoise
 - `restore.html`, `src/restore/` — the Speech Restoration Lab
-- `restore-models/` — converts the lab's models (PASE, FlowSE) to ONNX
+- `restore-models/` — converts the lab's models (ClearerVoice, PASE, FlowSE) to ONNX
 - `src/dsp/` — filters, BS.1770 loudness, resampler, true-peak meter and limiter
 - `src/io/` — WAV and MP3 readers, OPFS storage

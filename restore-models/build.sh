@@ -2,9 +2,10 @@
 # Converts speech restoration models to the ONNX files the restoration lab
 # (restore.html) loads.
 #
-# usage: restore-models/build.sh <out-dir> [model ...]   (default: both)
+# usage: restore-models/build.sh <out-dir> [model ...]   (default: all)
 #
 # Models:
+#   clearvoice  ClearerVoice MossFormer2_SE_48K. Downloads 222 MB, writes 163 MB.
 #   pase      PASE. Downloads 1.5 GB, writes 769 MB.
 #   flowse    FlowSE, with the Vocos vocoder. Downloads 4.1 GB, writes 720 MB.
 #
@@ -15,6 +16,9 @@
 # Each model's downloads are deleted once it's converted, to save disk space.
 set -euo pipefail
 
+CV_REPO=https://github.com/modelscope/ClearerVoice-Studio
+CV_COMMIT=6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61
+CV_HF=https://huggingface.co/alibabasglab/MossFormer2_SE_48K/resolve/eff8c97925c8bec812af707814b3e5d777fd4503
 PASE_REPO=https://github.com/cisco-open/pase
 PASE_COMMIT=45614efae73dc49bf36018d1ca6a9319b3050038
 PASE_HF=https://huggingface.co/cisco-ai/pase/resolve/31b1cf14f41d4d7a1a469eaa45ce235825d900f0
@@ -26,7 +30,7 @@ VOCOS_HF=https://huggingface.co/charactr/vocos-mel-24khz/resolve/0feb3fdd929bcd6
 here=$(cd "$(dirname "$0")" && pwd)
 out=$(realpath -m "$1")
 shift
-models=(pase flowse)
+models=(clearvoice pase flowse)
 [ $# -eq 0 ] || models=("$@")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -46,6 +50,14 @@ clone() { # repo commit dest
 files=()
 for model in "${models[@]}"; do
   case "$model" in
+    clearvoice)
+      echo "== ClearerVoice MossFormer2_SE_48K"
+      clone "$CV_REPO" "$CV_COMMIT" "$work/cv-src"
+      fetch "$CV_HF/last_best_checkpoint.pt" "$work/cv/MossFormer2_SE_48K.pt" 03692b9f773bbd6bb43b9c5a41f96b1e28affd66e13796b7bec66ad3d8b227c6
+      CV_SRC="$work/cv-src" python "$here/export_clearvoice.py" "$work/cv/MossFormer2_SE_48K.pt" "$work/onnx" "$work/cv-src/clearvoice/samples/input.wav"
+      rm -rf "$work/cv" "$work/cv-src"
+      files+=(mossformer2_se_48k)
+      ;;
     pase)
       echo "== PASE"
       clone "$PASE_REPO" "$PASE_COMMIT" "$work/pase-src"

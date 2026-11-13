@@ -2,6 +2,7 @@ Model files for the [Speech Restoration Lab](https://goodgriefgnome.github.io/pr
 
 | Model | Files | Size |
 |---|---|---|
+| ClearerVoice (MossFormer2, 48 kHz) | `mossformer2_se_48k.f16.onnx` | 163 MB |
 | PASE | `pase_encoder.f16.onnx`, `pase_vocoder.f16.onnx` | 769 MB |
 | FlowSE | `flowse_mel.onnx`, `flowse_velocity.f16.onnx`, `flowse_vocoder.f16.onnx`, plus `flowse_vocab.txt` to use a transcript | 720 MB |
 

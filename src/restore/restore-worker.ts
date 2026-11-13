@@ -3,7 +3,7 @@
  * Runs speech restoration models on an excerpt, for the comparison page.
  *
  * Models (ONNX, exported by restore-models/export_*.py, read from files the
- * person picks): PASE and FlowSE. Plus the app's own noise reduction
+ * person picks): ClearerVoice's MossFormer2, PASE and FlowSE. Plus the app's own noise reduction
  * (RNNoise) as the baseline.
  *
  * Big sessions are created one stage at a time and released straight after,
@@ -16,7 +16,7 @@ import { openAudio } from "../io/mp3.ts";
 import { rnnoiseFactory } from "../pipeline/denoise.ts";
 import { runBlock, WORK_RATE } from "../pipeline/frontend.ts";
 
-export type Method = "rnnoise" | "pase" | "flowse" | "flowse_text";
+export type Method = "rnnoise" | "clearvoice" | "pase" | "flowse" | "flowse_text";
 /** Versions shown on the page: the input and each method. */
 export type VersionKey = Method | "original";
 
@@ -215,6 +215,37 @@ function windows(x: Float32Array, rate: number, seconds: number, overlap: number
   return { segs, join: (ys: Float32Array[]) => crossfadeJoin(ys.map((y, i) => fit(y, segs[i].length)), HOP, OV, x.length) };
 }
 
+/**
+ * ClearerVoice MossFormer2_SE_48K: a mask on the recording's own spectrum
+ * (nothing is resynthesised). The graph handles one 4 s window at 48 kHz;
+ * windows are 3 s apart and stitched as ClearerVoice's long-audio decode does,
+ * keeping each window's middle and giving up 0.5 s at the inner edges.
+ */
+async function runClearVoice(req: RestoreRequest, x: Float32Array): Promise<Float32Array> {
+  const say = (text: string, f: number) => post({ type: "status", method: "clearvoice", text, fraction: f });
+  const R = 48000, WIN = 4 * R, STRIDE = 3 * R, GIVE = R / 2;
+  const x48 = resample(x, SR, R);
+  const n = Math.max(1, Math.ceil((x48.length + GIVE - WIN) / STRIDE) + 1);
+  const padded = new Float32Array((n - 1) * STRIDE + WIN);
+  padded.set(x48);
+  const y = new Float32Array(padded.length);
+  const s = await session(req, "clearvoice", "mossformer2_se_48k.f16.onnx", "ClearerVoice (163 MB)", req.gpu);
+  try {
+    for (let i = 0; i < n; i++) {
+      say(`Enhancing: ${i + 1} of ${n}…`, i / n);
+      const at = i * STRIDE;
+      const o = await s.run({ wav: tensor(padded.slice(at, at + WIN), [1, WIN]) });
+      const seg = o.out.data as Float32Array;
+      if (i === 0) y.set(seg.subarray(0, WIN - GIVE), 0);
+      else y.set(seg.subarray(GIVE, WIN - GIVE), at + GIVE);
+      o.out.dispose();
+    }
+  } finally {
+    await s.release();
+  }
+  return resample(y.subarray(0, x48.length), R, SR);
+}
+
 /** PASE's padding: to 320k + 80 samples (trimming if that's shorter). */
 const paseLength = (n: number) => (n % 320 === 80 ? n : Math.floor(n / 320) * 320 + 80);
 
@@ -375,6 +406,7 @@ if (self.name !== "em-pthread") self.onmessage = async (e: MessageEvent<RestoreR
     try {
       const y =
         m === "rnnoise" ? await runRnnoise(x)
+        : m === "clearvoice" ? await runClearVoice(req, x)
         : m === "pase" ? await runPase(req, x)
         : await runFlowse(req, m, x);
       post({ type: "status", method: m, text: `Done in ${((performance.now() - t0) / 1000).toFixed(0)} s`, fraction: 1 });
