@@ -37,7 +37,7 @@ jobs:
       - run: |
           pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchaudio==2.11.1
           pip install --quiet -r restore-models/requirements.txt
-      - run: restore-models/build.sh --release "$RUNNER_TEMP/models" sidon pase flowse
+      - run: restore-models/build.sh "$RUNNER_TEMP/models"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

@@ -4,7 +4,6 @@ import { openAudio } from "../io/mp3.ts";
 import type { Method, RestoreRequest, RestoreResponse, VersionKey } from "./restore-worker.ts";
 // Only the constant: importing it from the worker module would bundle the worker into the page.
 const MODEL_FILES: Record<Exclude<Method, "rnnoise">, string[]> = {
-  resemble: [],
   sidon: ["sidon_predictor.f16.onnx", "sidon_vocoder.f16.onnx"],
   pase: ["pase_encoder.f16.onnx", "pase_vocoder.f16.onnx"],
   flowse: ["flowse_mel.onnx", "flowse_velocity.f16.onnx", "flowse_vocoder.f16.onnx"],
@@ -15,22 +14,18 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 const SR = 44100;
 const TARGET = -16;
 
-/** Where the models are; `?models=<url>` overrides (for testing other hosts). */
-const MODEL_BASE = new URL(new URLSearchParams(location.search).get("models") ?? "models/", location.href).href;
-
 const LABELS: Record<VersionKey, string> = {
   original: "Original",
   rnnoise: "App’s noise reduction",
-  resemble: "Resemble Enhance",
   sidon: "Sidon",
   pase: "PASE",
   flowse: "FlowSE",
   flowse_text: "FlowSE with transcript",
 };
-const METHODS: Method[] = ["rnnoise", "resemble", "sidon", "pase", "flowse", "flowse_text"];
+const METHODS: Method[] = ["rnnoise", "sidon", "pase", "flowse", "flowse_text"];
 const ORDER: VersionKey[] = ["original", ...METHODS];
-/** Models that run from files the person picks, rather than downloading. */
-const LOCAL: Method[] = ["sidon", "pase", "flowse", "flowse_text"];
+/** Models that run from files the person picks. */
+const LOCAL = METHODS.filter((m): m is Exclude<Method, "rnnoise"> => m !== "rnnoise");
 
 function clock(s: number): string {
   s = Math.max(0, Math.floor(s));
@@ -182,13 +177,6 @@ fileInput.addEventListener("change", async () => {
     $<HTMLButtonElement>("run").disabled = true;
   }
 });
-// Resemble Enhance's controls are only on the page when it's offered.
-for (const id of ["lambd", "tau"]) {
-  if (!$(id)) continue;
-  const show = () => ($(`${id}-val`).textContent = Number($<HTMLInputElement>(id).value).toFixed(1));
-  $(id).addEventListener("input", show);
-  show();
-}
 const setting = (id: string, fallback: number) => Number(($(id) as HTMLInputElement | null)?.value ?? fallback);
 
 // Model files chosen from disk, by name. Picking more adds to (or replaces) them.
@@ -196,7 +184,7 @@ const localFiles: Record<string, File> = {};
 function refreshLocal() {
   for (const m of LOCAL) {
     const box = $<HTMLInputElement>(`m-${m}`);
-    const missing = MODEL_FILES[m as Exclude<Method, "rnnoise">].filter((n) => !localFiles[n]);
+    const missing = MODEL_FILES[m].filter((n) => !localFiles[n]);
     const wasDisabled = box.disabled;
     box.disabled = missing.length > 0;
     if (box.disabled) box.checked = false;
@@ -271,14 +259,8 @@ $("run").addEventListener("click", () => {
     start,
     length,
     methods,
-    resemble: {
-      nfe: setting("nfe", 32),
-      lambd: setting("lambd", 0.5),
-      tau: setting("tau", 0.5),
-    },
     flowse: { steps: setting("flowse-steps", 32), transcript },
     gpu: ($("gpu") as HTMLInputElement | null)?.checked ?? false,
-    modelBase: MODEL_BASE,
     localFiles: { ...localFiles },
     seed: (Math.random() * 2 ** 32) >>> 0,
   };

@@ -3,8 +3,6 @@
 These ONNX files are conversions of published models. The weights are unchanged
 apart from being stored as 16-bit floats.
 
-- **Resemble Enhance**: Resemble AI, https://github.com/resemble-ai/resemble-enhance (MIT).
-  Weights: https://huggingface.co/ResembleAI/resemble-enhance (MIT).
 - **Sidon v0.1**: Wataru Nakata, Yuki Saito (SARU Lab), https://github.com/sarulab-speech/Sidon (MIT).
   Weights: https://huggingface.co/sarulab-speech/sidon-v0.1 (MIT), fine-tuned from
   w2v-BERT 2.0 (Meta, MIT).

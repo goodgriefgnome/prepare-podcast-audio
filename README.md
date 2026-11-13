@@ -66,7 +66,6 @@ Memory use is constant: the delay line (about 16 MB mono, 33 MB stereo), up to o
 |---|---|
 | Original | The excerpt, mixed to mono at 44.1 kHz |
 | App’s noise reduction | RNNoise with the app’s 18 dB limit (the baseline) |
-| [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) | The enhancer: a denoiser, then latent conditional flow matching generates the voice's features from the recording, then a UnivNet vocoder. Steps, denoise strength (λ) and prior temperature (τ) can be set; the defaults are the model's own (16 midpoint steps, 0.5, 0.5). |
 | [Sidon](https://github.com/sarulab-speech/Sidon) | A fine-tuned w2v-BERT 2.0 cleans self-supervised speech features (which encode phonemes), then a vocoder synthesises 48 kHz audio. Open reproduction of Google's Miipher-2. Follows the official demo's processing. |
 | [PASE](https://github.com/cisco-open/pase) | A denoised WavLM (DeWavLM) gives phonetic (layer 24) and acoustic (layer 1) features, and a dual-stream vocoder resynthesises 16 kHz speech. Designed to avoid the phoneme hallucinations of generative enhancement. |
 | [FlowSE](https://github.com/Honee-W/FlowSE) | Conditional flow matching on mel spectrograms, then the Vocos vocoder (24 kHz). Optionally conditioned on a typed transcript. Trained on Mandarin (WenetSpeech4TTS). 8, 16 or 32 Euler steps (32 is its default). |
@@ -76,20 +75,19 @@ All versions can be loudness-matched to −16 LUFS for a fair comparison, and sw
 Tried and dropped:
 
 - **VoiceFixer** (Liu et al., 2022) came out thin and, worse, removed unvoiced consonants (for example the "ch" at the end of "church"): it regenerates speech from a predicted clean spectrogram, and noise-like consonants get treated as noise. Its output was also noise on ONNX Runtime's WebGPU backend.
+- **Resemble Enhance** (Resemble AI, 2023) misheard some consonants and resynthesised the wrong ones: it fills in speech from a 64-value-per-frame latent with no notion of phonemes.
 - **SelfRemaster** has no general-purpose model. It learns from the degraded recordings themselves, so it would need training (on a GPU, with hours of audio) for each recording setup.
 
-**How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). WebGPU is an opt-in setting, as it hasn't been checked against the CPU on a real GPU. The conversion keeps the model's maths but changes how some parts are expressed so they run in a browser:
+**How it runs.** The models are converted to ONNX by `restore-models/build.sh` and run with ONNX Runtime Web on the CPU (WebAssembly, multithreaded when the page is cross-origin isolated, which the service worker arranges). WebGPU is an opt-in setting, as it hasn't been checked against the CPU on a real GPU.
 
-- STFTs and inverse STFTs are written as convolutions (matches the originals to 1e-8).
-- The flow-matching ODE loop (midpoint method), noise and chunking run in JavaScript; the vocoder's location-variable convolutions are rewritten as matrix multiplies (identical results), and the vocoder runs on 3 s windows with 0.3 s of context each side, because its intermediate tensors don't fit in WebAssembly's 4 GB for longer pieces.
-- Weights are stored as 16-bit floats and computed in 32-bit (the flow model is unchanged; it was evidently trained in 16-bit).
-- Long excerpts are processed in 30 s pieces with 1 s crossfades, as the original does.
+They're 0.5–0.8 GB each, so they aren't hosted with the page: the `Restoration lab models` workflow builds them and attaches them to the [restore-models-v1 release](https://github.com/goodgriefgnome/prepare-podcast-audio/releases/tag/restore-models-v1). You download the files and pick them in the page, which reads them from disk.
 
-**Speed** (desktop, CPU, 4 threads): about 13 s per second of audio with default settings.
+- Each conversion is checked in the build against the original model's output (relative error below 1e-3). Weights are stored as 16-bit floats and computed in 32-bit; that moves the log-mel spectrum by 0.04 dB for Sidon and PASE, and 0.4 dB after FlowSE's 32 steps.
+- STFTs and inverse STFTs are written as convolutions; FlowSE's ODE loop, Sidon's w2v-BERT input features and all resampling run in JavaScript.
+- Sidon's published checkpoints are TorchScript traces, which are translated back into an ordinary PyTorch module for export. The third-party ONNX port on Hugging Face differs from the original by about 0.9 dB, so it isn't used.
+- Excerpts are processed in 30 s windows with 1 s crossfades, to keep attention within WebAssembly's memory.
 
-**Sidon, PASE and FlowSE** (0.5–0.8 GB each) aren't hosted with the page: the `Restoration lab models` workflow builds them (`restore-models/build.sh --release`) and attaches them to the [restore-models-v1 release](https://github.com/goodgriefgnome/prepare-podcast-audio/releases/tag/restore-models-v1). You download the files and pick them in the page, which reads them from disk. Each conversion is checked in the build against the original model's output (relative error below 1e-3 in 32-bit; with 16-bit weights the log-mel spectrum is within 0.04 dB for Sidon and PASE and 0.4 dB after FlowSE's 32 steps). Sidon's published checkpoints are TorchScript traces, which are translated back into an ordinary PyTorch module for export; the third-party ONNX port on Hugging Face differs from the original by about 0.9 dB, so it isn't used. Excerpts are processed in 30 s windows with 1 s crossfades, to keep attention within WebAssembly's memory.
-
-**Downloads:** 730 MB, fetched on first use and kept in the browser's cache. Models are split into parts under 100 MB with an `index.json` (size and SHA-256 per model). The page looks for them in `models/` next to it, or wherever `?models=<url>` points. The deploy workflow builds them with `restore-models/build.sh` (cached until `restore-models/` changes) and publishes them with the site.
+**Speed** (CPU, 3 threads, per second of audio): Sidon about 2 s, PASE about 1 s, FlowSE about 9 s at 8 steps (scaling with steps).
 
 ## Development
 
@@ -133,6 +131,6 @@ The app ships a WebAssembly build of [RNNoise](https://github.com/xiph/rnnoise) 
 - `src/pipeline/denoise.ts` — loads RNNoise
 - `rnnoise/build.sh` — builds RNNoise
 - `restore.html`, `src/restore/` — the Speech Restoration Lab
-- `restore-models/` — converts the lab's models (Resemble Enhance, Sidon, PASE, FlowSE) to ONNX
+- `restore-models/` — converts the lab's models (Sidon, PASE, FlowSE) to ONNX
 - `src/dsp/` — filters, BS.1770 loudness, resampler, true-peak meter and limiter
 - `src/io/` — WAV and MP3 readers, OPFS storage

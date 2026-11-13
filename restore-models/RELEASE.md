@@ -6,4 +6,4 @@ Model files for the [Speech Restoration Lab](https://goodgriefgnome.github.io/pr
 | PASE | `pase_encoder.f16.onnx`, `pase_vocoder.f16.onnx` | 769 MB |
 | FlowSE | `flowse_mel.onnx`, `flowse_velocity.f16.onnx`, `flowse_vocoder.f16.onnx`, plus `flowse_vocab.txt` to use a transcript | 720 MB |
 
-The files are ONNX conversions of the published weights, built by `restore-models/build.sh --release` from this repository (`.github/workflows/restore-models.yml`). Each one was checked against the original model before being stored with 16-bit weights. `SHA256SUMS` lists their hashes. See `LICENSES.md` for the original projects and their licences.
+The files are ONNX conversions of the published weights, built by `restore-models/build.sh` from this repository (`.github/workflows/restore-models.yml`). Each one was checked against the original model before being stored with 16-bit weights. `SHA256SUMS` lists their hashes. See `LICENSES.md` for the original projects and their licences.
